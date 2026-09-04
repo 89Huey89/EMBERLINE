@@ -1,5 +1,4 @@
-import { BODIES, SALVAGE_ZONE } from "./data";
-import type { CelestialBody, Station, Vec2 } from "./types";
+import type { CelestialBody, SalvageField, Station, StarSystem, Vec2 } from "./types";
 
 const TAU = Math.PI * 2;
 
@@ -23,6 +22,12 @@ const TAU = Math.PI * 2;
  * and shorten as they pass, and a route that is cheap this shift may not be
  * the next. Station periods are authored instead — see the note in `data.ts`
  * — because a station moving at its true orbital speed could not be caught.
+ *
+ * Every function below takes the `StarSystem` explicitly rather than reading
+ * a module-level world: an `orbit.around` (on a body, a station or a field)
+ * is only ever an id within that same system, so passing the system in is
+ * what lets more than one of them exist without this file knowing how many
+ * there are.
  */
 export type Pose = Vec2 & { vx: number; vy: number };
 
@@ -48,14 +53,14 @@ function orbitAbout(base: Pose, anchorOf: Vec2, anchor: Vec2, period: number, ti
   };
 }
 
-const bodyById = (id: string) => BODIES.find((body) => body.id === id);
+const bodyById = (system: StarSystem, id: string) => system.bodies.find((body) => body.id === id);
 
 /** Where a body is and how fast it is going. The star carries no orbit and does not move. */
-export function bodyPose(body: CelestialBody, time: number): Pose {
+export function bodyPose(system: StarSystem, body: CelestialBody, time: number): Pose {
   if (!body.orbit) return { x: body.position.x, y: body.position.y, vx: 0, vy: 0 };
-  const primary = bodyById(body.orbit.around);
+  const primary = bodyById(system, body.orbit.around);
   if (!primary) return { x: body.position.x, y: body.position.y, vx: 0, vy: 0 };
-  return orbitAbout(bodyPose(primary, time), primary.position, body.position, body.orbit.period, time);
+  return orbitAbout(bodyPose(system, primary, time), primary.position, body.position, body.orbit.period, time);
 }
 
 /**
@@ -67,34 +72,35 @@ export function bodyPose(body: CelestialBody, time: number): Pose {
  * velocity is the sum of both lanes, so a port on a fast inner world is
  * genuinely harder to come alongside than one further out.
  */
-export function stationPose(station: Station, time: number): Pose {
-  const primary = bodyById(station.orbit.around);
+export function stationPose(system: StarSystem, station: Station, time: number): Pose {
+  const primary = bodyById(system, station.orbit.around);
   if (!primary) return STATIC;
-  return orbitAbout(bodyPose(primary, time), primary.position, station.position, station.orbit.period, time);
+  return orbitAbout(bodyPose(system, primary, time), primary.position, station.position, station.orbit.period, time);
 }
 
 /**
- * The Wake's centre and velocity. It is co-orbital with Rayleigh, so the
- * debris and the salvage inside it are held relative to this and travel with
- * the cloud rather than being left behind by it.
+ * A salvage field's centre and velocity at `time`, carried by whatever it
+ * orbits. Debris and salvage held inside a field travel with it for the same
+ * reason a station's staged freight does: without an anchor, anything set
+ * down would be left behind by the very thing it belongs to within a minute.
  */
-export function wakePose(time: number): Pose {
-  const primary = bodyById(SALVAGE_ZONE.orbit.around);
-  if (!primary) return { ...STATIC, x: SALVAGE_ZONE.center.x, y: SALVAGE_ZONE.center.y };
-  return orbitAbout(bodyPose(primary, time), primary.position, SALVAGE_ZONE.center, SALVAGE_ZONE.orbit.period, time);
+export function fieldPose(system: StarSystem, field: SalvageField, time: number): Pose {
+  const primary = bodyById(system, field.orbit.around);
+  if (!primary) return { ...STATIC, x: field.center.x, y: field.center.y };
+  return orbitAbout(bodyPose(system, primary, time), primary.position, field.center, field.orbit.period, time);
 }
 
 /** A station's lane radius around its own planet, for the chart and for tuning. */
-export function orbitRadius(station: Station) {
-  const primary = bodyById(station.orbit.around);
+export function orbitRadius(system: StarSystem, station: Station) {
+  const primary = bodyById(system, station.orbit.around);
   if (!primary) return 0;
   return Math.hypot(station.position.x - primary.position.x, station.position.y - primary.position.y);
 }
 
 /** A body's lane radius around the star. Zero for the star itself. */
-export function bodyOrbitRadius(body: CelestialBody) {
+export function bodyOrbitRadius(system: StarSystem, body: CelestialBody) {
   if (!body.orbit) return 0;
-  const primary = bodyById(body.orbit.around);
+  const primary = bodyById(system, body.orbit.around);
   if (!primary) return 0;
   return Math.hypot(body.position.x - primary.position.x, body.position.y - primary.position.y);
 }

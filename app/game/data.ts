@@ -1,29 +1,15 @@
 import type {
   CargoDefinition,
-  CelestialBody,
   ContractDefinition,
   ShipDefinition,
-  Station,
+  StarSystem,
   UpgradeDefinition,
 } from "./types";
 
-/**
- * Scale of the system, and the one relationship that keeps it playable.
- *
- * A route is meant to be flown as burn / coast / flip / burn, so the trip
- * time comes from thrust-to-mass, not from the map alone. Ships accelerate
- * at 13-19 m/s² empty, which puts the typical Pilgrim - Sinter run near 30 s
- * empty and 40 s loaded, and the longest run in the system near 45 s. A
- * loaded round trip burns most of a tank: propellant is the budget you plan
- * a route against.
- *
- * Body `gravity` is quoted against the true squared distance, so it scales
- * with the square of any change to these positions. It was scaled with them
- * here, which leaves gravity per unit of ship acceleration the thing that
- * actually changed: a close pass now bends a loaded ship, and inside roughly
- * two radii of Rayleigh a loaded courier can no longer climb straight out.
- */
-export const WORLD = { width: 35000, height: 35000 };
+/* Cargo, ships and upgrades are not system-specific: a nickel ore hauler or
+   a Copperbell drive means the same thing wherever it is bought, so these
+   stay flat catalogues shared by every system rather than living inside
+   any one of them. */
 
 export const CARGO: Record<string, CargoDefinition> = {
   ore: { id: "ore", name: "Nickel ore", short: "ORE", mass: 18, value: 260, color: "#655e54", accent: "#d29a54", shape: "ore" },
@@ -36,169 +22,6 @@ export const CARGO: Record<string, CargoDefinition> = {
   machinery: { id: "machinery", name: "Oversized machinery", short: "HVY", mass: 44, value: 1480, color: "#5a5147", accent: "#ef7b45", shape: "machine" },
   science: { id: "science", name: "Survey instruments", short: "SCI", mass: 7, value: 1100, color: "#5b6570", accent: "#d5bd70", shape: "crate" },
 };
-
-/**
- * The star and the worlds, all in one list so gravity, the hazard rings and
- * the contact solver treat them alike. Cinder carries no orbit — it is what
- * everything else orbits — and is marked so the art and the hazard radii can
- * tell a corona from a surface.
- *
- * Periods follow Kepler from the innermost lane outward (T proportional to
- * r^1.5), which is what makes alignments drift and lanes open and close. The
- * base period is set so the fastest body still moves at 35 m/s, well under
- * what any ship cruises at: a world you cannot catch is not a destination.
- */
-export const BODIES: CelestialBody[] = [
-  {
-    id: "star",
-    name: "Cinder",
-    kind: "system primary",
-    position: { x: 0, y: 0 },
-    radius: 900,
-    gravity: 40000000,
-    color: "#f6bd63",
-    atmosphere: "#ffd89a",
-    star: true,
-    description: "The system's own furnace, and the reason every hold in it is warm. Nothing that goes near it comes back.",
-  },
-  {
-    id: "cinder",
-    name: "Rayleigh",
-    kind: "temperate industrial world",
-    position: { x: 0, y: 8400 },
-    orbit: { around: "star", period: 2467 },
-    radius: 705,
-    gravity: 21900000,
-    color: "#9e522f",
-    atmosphere: "#e39959",
-    description: "A rust-gold world under a scattering amber sky. Its orbital elevators feed the oldest yards in the system.",
-  },
-  {
-    id: "morrow",
-    name: "Nernst",
-    kind: "ice moon",
-    position: { x: 12817, y: -7400 },
-    orbit: { around: "star", period: 5769 },
-    radius: 350,
-    gravity: 4250000,
-    color: "#6b7e83",
-    atmosphere: "#9cc4c4",
-    description: "A fractured moon a few degrees above absolute quiet, rich in water ice and deep blue shadow.",
-  },
-  {
-    id: "brindle",
-    name: "Roche",
-    kind: "captured metallic body",
-    position: { x: -3007, y: -1094 },
-    orbit: { around: "star", period: 580 },
-    radius: 215,
-    gravity: 1560000,
-    color: "#625749",
-    description: "A nickel-iron body caught at the edge of its limit, cut through with tunnels and navigation lamps.",
-  },
-];
-
-/**
- * The ports.
- *
- * Each `position` is where the station stands at the start of a shift and is
- * also its orbit: distance from the primary is the radius, bearing is the
- * phase. `orbit.period` is authored for play rather than derived from the
- * primary's mass — see `orbits.ts` for why — but the periods are ordered as
- * Kepler would order them, so the wider orbits are the slower ones.
- */
-export const STATIONS: Station[] = [
-  {
-    id: "pilgrim",
-    name: "Pilgrim Exchange",
-    callSign: "PX-01",
-    kind: "commerce & habitation",
-    position: { x: -1975, y: 8200 },
-    orbit: { around: "cinder", period: 900 },
-    color: "#d9b15f",
-    orientation: 0.08,
-    size: "standard",
-    produces: ["food", "electronics"],
-    consumes: ["water", "cryo"],
-    services: ["contracts", "fuel", "repair"],
-    description: "A warm ring of markets, bunkrooms, and shift-change traffic above Rayleigh.",
-  },
-  {
-    id: "sinter",
-    name: "Sinter Refinery",
-    callSign: "SN-44",
-    kind: "ore refinery",
-    position: { x: 1975, y: 9850 },
-    orbit: { around: "cinder", period: 1220 },
-    color: "#d66b3c",
-    orientation: -0.55,
-    size: "large",
-    produces: ["metals", "components"],
-    consumes: ["ore", "water"],
-    services: ["contracts", "fuel"],
-    description: "Kilns and radiators burn copper-bright against Rayleigh’s night side.",
-  },
-  {
-    id: "anvil",
-    name: "Anvil Gate Shipyard",
-    callSign: "AG-17",
-    kind: "shipyard",
-    position: { x: -2900, y: 10400 },
-    orbit: { around: "cinder", period: 2100 },
-    color: "#ca8e52",
-    orientation: 0.35,
-    size: "large",
-    produces: ["machinery"],
-    consumes: ["metals", "components", "electronics"],
-    services: ["contracts", "fuel", "repair", "upgrades", "ships"],
-    description: "A lattice of construction docks where working ships are rebuilt in full view.",
-  },
-  {
-    id: "deepwell",
-    name: "Deepwell Extraction",
-    callSign: "DW-3",
-    kind: "mining concern",
-    position: { x: -2407, y: -1269 },
-    orbit: { around: "brindle", period: 360 },
-    color: "#af7a45",
-    orientation: 0.82,
-    size: "standard",
-    produces: ["ore", "machinery"],
-    consumes: ["food", "components"],
-    services: ["contracts", "fuel"],
-    description: "Ore cages emerge from Roche’s shadow on slow industrial winches.",
-  },
-  {
-    id: "bluehour",
-    name: "Bluehour Depot",
-    callSign: "BH-08",
-    kind: "ice processing & fuel",
-    position: { x: 12267, y: -8225 },
-    orbit: { around: "morrow", period: 480 },
-    color: "#75a8a7",
-    orientation: -0.24,
-    size: "standard",
-    produces: ["water", "cryo"],
-    consumes: ["machinery", "food"],
-    services: ["contracts", "fuel", "repair"],
-    description: "Blue work lamps drift above the moon’s pale scarps and cryogenic farms.",
-  },
-  {
-    id: "quiet",
-    name: "Quiet Arc Laboratory",
-    callSign: "QA-12",
-    kind: "research platform",
-    position: { x: 14067, y: -6200 },
-    orbit: { around: "morrow", period: 1100 },
-    color: "#88aaa7",
-    orientation: 0.12,
-    size: "small",
-    produces: ["science"],
-    consumes: ["electronics", "cryo"],
-    services: ["contracts", "fuel", "upgrades"],
-    description: "A delicate instrument platform listening beyond the traffic lanes.",
-  },
-];
 
 export const SHIPS: ShipDefinition[] = [
   {
@@ -236,7 +59,7 @@ export const UPGRADES: UpgradeDefinition[] = [
   { id: "cryo", name: "Cryogenic umbilical", cost: 6400, description: "Powers specialized insulated cargo tanks." },
 ];
 
-export const CONTRACTS: ContractDefinition[] = [
+const CINDER_CONTRACTS: ContractDefinition[] = [
   { id: "water-sinter", title: "Cooling the kilns", kind: "standard", origin: "pilgrim", destination: "sinter", cargo: "water", quantity: 2, baseReward: 1550, minReputation: 0, description: "Two process-water tanks for Sinter’s night-shift furnaces." },
   { id: "express-quiet", title: "A quiet correction", kind: "express", origin: "pilgrim", destination: "quiet", cargo: "electronics", quantity: 1, baseReward: 2800, timeLimit: 105, minReputation: 0, description: "A guidance board is needed before the next observation window." },
   { id: "food-deepwell", title: "Third shift provisions", kind: "fragile", origin: "pilgrim", destination: "deepwell", cargo: "food", quantity: 1, baseReward: 2100, minReputation: 1, description: "Fresh provisions. Keep the acceleration civil and the seals intact." },
@@ -251,17 +74,231 @@ export const CONTRACTS: ContractDefinition[] = [
   { id: "food-bluehour", title: "Bluehour pantry", kind: "standard", origin: "deepwell", destination: "bluehour", cargo: "food", quantity: 2, baseReward: 3350, minReputation: 2, description: "Vacuum-packed provisions exchanged through Pilgrim’s mining cooperative." },
 ];
 
-export const SALVAGE_ZONE = {
-  name: "The Wake",
+/**
+ * One system's worth of world: the star, its bodies, its ports, its
+ * contract board, its salvage fields. This is the only StarSystem authored
+ * so far — see SYSTEMS below — but nothing here is Cinder-specific in
+ * shape, only in content: a second system is another entry in that array,
+ * built the same way.
+ */
+const CINDER: StarSystem = {
+  id: "cinder",
+  name: "The Cinder system",
+
   /**
-   * Co-orbital with Rayleigh: the same lane and the same period, trailing it
-   * by 40 degrees. A cloud parked at a fixed point would be swept by
-   * Rayleigh's own station system twice an orbit, and there is no fixed
-   * radius that clears every lane — so it keeps station with the world whose
-   * launch debris it is, which is also what the guide has always claimed.
+   * Scale of the system, and the one relationship that keeps it playable.
+   *
+   * A route is meant to be flown as burn / coast / flip / burn, so the trip
+   * time comes from thrust-to-mass, not from the map alone. Ships accelerate
+   * at 13-19 m/s² empty, which puts the typical Pilgrim - Sinter run near 30 s
+   * empty and 40 s loaded, and the longest run in the system near 45 s. A
+   * loaded round trip burns most of a tank: propellant is the budget you plan
+   * a route against.
+   *
+   * Body `gravity` is quoted against the true squared distance, so it scales
+   * with the square of any change to these positions. It was scaled with them
+   * here, which leaves gravity per unit of ship acceleration the thing that
+   * actually changed: a close pass now bends a loaded ship, and inside roughly
+   * two radii of Rayleigh a loaded courier can no longer climb straight out.
    */
-  center: { x: 5399, y: 6434 },
-  orbit: { around: "star", period: 2467 },
-  radius: 620,
-  description: "A slow cloud of launch hardware, dead relays, and one persistent unknown return.",
+  bounds: { width: 35000, height: 35000 },
+
+  /**
+   * The star and the worlds, all in one list so gravity, the hazard rings and
+   * the contact solver treat them alike. Cinder carries no orbit — it is what
+   * everything else orbits — and is marked so the art and the hazard radii can
+   * tell a corona from a surface.
+   *
+   * Periods follow Kepler from the innermost lane outward (T proportional to
+   * r^1.5), which is what makes alignments drift and lanes open and close. The
+   * base period is set so the fastest body still moves at 35 m/s, well under
+   * what any ship cruises at: a world you cannot catch is not a destination.
+   */
+  bodies: [
+    {
+      id: "star",
+      name: "Cinder",
+      kind: "system primary",
+      position: { x: 0, y: 0 },
+      radius: 900,
+      gravity: 40000000,
+      color: "#f6bd63",
+      atmosphere: "#ffd89a",
+      star: true,
+      description: "The system's own furnace, and the reason every hold in it is warm. Nothing that goes near it comes back.",
+    },
+    {
+      id: "cinder",
+      name: "Rayleigh",
+      kind: "temperate industrial world",
+      position: { x: 0, y: 8400 },
+      orbit: { around: "star", period: 2467 },
+      radius: 705,
+      gravity: 21900000,
+      color: "#9e522f",
+      atmosphere: "#e39959",
+      description: "A rust-gold world under a scattering amber sky. Its orbital elevators feed the oldest yards in the system.",
+    },
+    {
+      id: "morrow",
+      name: "Nernst",
+      kind: "ice moon",
+      position: { x: 12817, y: -7400 },
+      orbit: { around: "star", period: 5769 },
+      radius: 350,
+      gravity: 4250000,
+      color: "#6b7e83",
+      atmosphere: "#9cc4c4",
+      description: "A fractured moon a few degrees above absolute quiet, rich in water ice and deep blue shadow.",
+    },
+    {
+      id: "brindle",
+      name: "Roche",
+      kind: "captured metallic body",
+      position: { x: -3007, y: -1094 },
+      orbit: { around: "star", period: 580 },
+      radius: 215,
+      gravity: 1560000,
+      color: "#625749",
+      description: "A nickel-iron body caught at the edge of its limit, cut through with tunnels and navigation lamps.",
+    },
+  ],
+
+  /**
+   * The ports.
+   *
+   * Each `position` is where the station stands at the start of a shift and is
+   * also its orbit: distance from the primary is the radius, bearing is the
+   * phase. `orbit.period` is authored for play rather than derived from the
+   * primary's mass — see `orbits.ts` for why — but the periods are ordered as
+   * Kepler would order them, so the wider orbits are the slower ones.
+   */
+  stations: [
+    {
+      id: "pilgrim",
+      name: "Pilgrim Exchange",
+      callSign: "PX-01",
+      kind: "commerce & habitation",
+      position: { x: -1975, y: 8200 },
+      orbit: { around: "cinder", period: 900 },
+      color: "#d9b15f",
+      orientation: 0.08,
+      size: "standard",
+      produces: ["food", "electronics"],
+      consumes: ["water", "cryo"],
+      services: ["contracts", "fuel", "repair"],
+      description: "A warm ring of markets, bunkrooms, and shift-change traffic above Rayleigh.",
+    },
+    {
+      id: "sinter",
+      name: "Sinter Refinery",
+      callSign: "SN-44",
+      kind: "ore refinery",
+      position: { x: 1975, y: 9850 },
+      orbit: { around: "cinder", period: 1220 },
+      color: "#d66b3c",
+      orientation: -0.55,
+      size: "large",
+      produces: ["metals", "components"],
+      consumes: ["ore", "water"],
+      services: ["contracts", "fuel"],
+      description: "Kilns and radiators burn copper-bright against Rayleigh’s night side.",
+    },
+    {
+      id: "anvil",
+      name: "Anvil Gate Shipyard",
+      callSign: "AG-17",
+      kind: "shipyard",
+      position: { x: -2900, y: 10400 },
+      orbit: { around: "cinder", period: 2100 },
+      color: "#ca8e52",
+      orientation: 0.35,
+      size: "large",
+      produces: ["machinery"],
+      consumes: ["metals", "components", "electronics"],
+      services: ["contracts", "fuel", "repair", "upgrades", "ships"],
+      description: "A lattice of construction docks where working ships are rebuilt in full view.",
+    },
+    {
+      id: "deepwell",
+      name: "Deepwell Extraction",
+      callSign: "DW-3",
+      kind: "mining concern",
+      position: { x: -2407, y: -1269 },
+      orbit: { around: "brindle", period: 360 },
+      color: "#af7a45",
+      orientation: 0.82,
+      size: "standard",
+      produces: ["ore", "machinery"],
+      consumes: ["food", "components"],
+      services: ["contracts", "fuel"],
+      description: "Ore cages emerge from Roche’s shadow on slow industrial winches.",
+    },
+    {
+      id: "bluehour",
+      name: "Bluehour Depot",
+      callSign: "BH-08",
+      kind: "ice processing & fuel",
+      position: { x: 12267, y: -8225 },
+      orbit: { around: "morrow", period: 480 },
+      color: "#75a8a7",
+      orientation: -0.24,
+      size: "standard",
+      produces: ["water", "cryo"],
+      consumes: ["machinery", "food"],
+      services: ["contracts", "fuel", "repair"],
+      description: "Blue work lamps drift above the moon’s pale scarps and cryogenic farms.",
+    },
+    {
+      id: "quiet",
+      name: "Quiet Arc Laboratory",
+      callSign: "QA-12",
+      kind: "research platform",
+      position: { x: 14067, y: -6200 },
+      orbit: { around: "morrow", period: 1100 },
+      color: "#88aaa7",
+      orientation: 0.12,
+      size: "small",
+      produces: ["science"],
+      consumes: ["electronics", "cryo"],
+      services: ["contracts", "fuel", "upgrades"],
+      description: "A delicate instrument platform listening beyond the traffic lanes.",
+    },
+  ],
+
+  contracts: CINDER_CONTRACTS,
+
+  fields: [
+    {
+      id: "wake",
+      name: "The Wake",
+      /**
+       * Co-orbital with Rayleigh: the same lane and the same period, trailing it
+       * by 40 degrees. A cloud parked at a fixed point would be swept by
+       * Rayleigh's own station system twice an orbit, and there is no fixed
+       * radius that clears every lane — so it keeps station with the world whose
+       * launch debris it is, which is also what the guide has always claimed.
+       */
+      center: { x: 5399, y: 6434 },
+      orbit: { around: "star", period: 2467 },
+      radius: 620,
+      description: "A slow cloud of launch hardware, dead relays, and one persistent unknown return.",
+    },
+  ],
 };
+
+/**
+ * Every playable system. A save records which one it is in (see `systemId`
+ * in EmberlineGame.tsx); nothing outside this file should bind to a single
+ * system's bodies, stations, contracts or fields directly — go through
+ * `systemById` or `SYSTEMS` instead, so a second system needs no code change
+ * anywhere else.
+ */
+export const SYSTEMS: StarSystem[] = [CINDER];
+
+/** Where a new shift starts, and what an unrecognised or missing save id falls back to. */
+export const DEFAULT_SYSTEM_ID = SYSTEMS[0].id;
+
+export function systemById(id: string): StarSystem | undefined {
+  return SYSTEMS.find((system) => system.id === id);
+}

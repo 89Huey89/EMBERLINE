@@ -118,3 +118,31 @@ export type UpgradeDefinition = {
   description: string;
 };
 
+export type SalvageField = {
+  id: string;
+  name: string;
+  /** Position at the start of a shift; see CelestialBody.position for the convention. */
+  center: Vec2;
+  orbit: { around: string; period: number };
+  radius: number;
+  description: string;
+};
+
+/**
+ * One system's worth of world. `bodies`, `stations`, `contracts` and
+ * `fields` only ever reference ids within the same system — a body's
+ * `orbit.around`, a contract's `origin`/`destination`, a pickup's
+ * `anchor.frame` — so a second system is another entry in `SYSTEMS`
+ * (see `data.ts`) and nothing else.
+ */
+export type StarSystem = {
+  id: string;
+  name: string;
+  /** Playable bounds, centred on the star. */
+  bounds: { width: number; height: number };
+  bodies: CelestialBody[];
+  stations: Station[];
+  contracts: ContractDefinition[];
+  fields: SalvageField[];
+};
+

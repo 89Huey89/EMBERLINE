@@ -279,28 +279,20 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
 .map-copy { position: absolute; z-index: 2; top: 56px; left: 48px; width: 400px; }
 .map-copy h2, .guide-heading h2 { margin: 15px 0 10px; font-size: clamp(34px, 4vw, 58px); font-weight: 450; letter-spacing: -.045em; line-height: 1; }
 .map-copy > p:last-child, .guide-heading > p:last-child { max-width: 340px; color: var(--muted); font-size: 11px; line-height: 1.7; }
-.system-map { position: absolute; inset: 0; background: radial-gradient(ellipse at 55% 51%, rgba(220,169,82,.05), transparent 45%); }
-.orbit { position: absolute; left: 50%; top: 50%; width: 300px; height: 300px; transform: translate(-50%,-50%); border: 1px dashed rgba(131,153,144,.16); border-radius: 50%; }
-.orbit-two { width: 620px; height: 620px; }
-.orbit-three { width: 940px; height: 940px; border-color: rgba(131,153,144,.11); }
-.map-body { position: absolute; z-index: 1; display: flex; align-items: center; gap: 10px; color: #a3aba5; font: var(--stencil); font-size: 8px; letter-spacing: .18em; }
-.map-body .map-planet { display: block; }
-.map-body.star { left: 50%; top: 50%; transform: translate(-50%,-50%); }.map-body.star .map-planet { width: 96px; height: 96px; }
-.map-body.star span { display: none; }
-.map-body.cinder { left: 66%; top: 28%; }.map-body.cinder .map-planet { width: 96px; height: 96px; }
-.map-body.morrow { left: 84%; top: 76%; }.map-body.morrow .map-planet { width: 54px; height: 54px; }
-.map-body.brindle { left: 30%; top: 63%; }.map-body.brindle .map-planet { width: 40px; height: 40px; }
-.map-body span { display: flex; flex-direction: column; gap: 3px; }
-.map-body small { color: #6f7873; font-size: 7px; letter-spacing: .12em; text-transform: uppercase; }
-.map-station { position: absolute; z-index: 2; display: grid; grid-template-columns: 12px auto; gap: 1px 9px; padding: 0; border: 0; background: transparent; color: #b6b6aa; cursor: pointer; text-align: left; font-family: var(--font-mono-ui), monospace; }
-.map-station i { grid-row: 1 / 3; width: 9px; height: 9px; margin-top: 3px; border: 1.5px solid var(--amber); transform: rotate(45deg); }
-.map-station b { color: var(--amber); font-size: 9px; font-weight: 700; letter-spacing: .12em; }
-.map-station span { color: #8d968f; font-size: 8px; white-space: nowrap; }
-.map-station:hover i, .map-station.active i { background: var(--amber); box-shadow: 0 0 14px var(--amber); }
-.map-station.active b { color: #17140d; background: var(--amber); padding: 1px 4px 0; }
-.station-pilgrim { left: 56%; top: 17%; }.station-sinter { left: 76%; top: 20%; }.station-anvil { left: 70%; top: 43%; }.station-deepwell { left: 21%; top: 72%; }.station-bluehour { left: 76%; top: 85%; }.station-quiet { left: 91%; top: 66%; }
-.wake-zone { position: absolute; left: 58%; top: 34%; display: flex; align-items: center; gap: 9px; color: #9b8a6b; font: var(--stencil); font-size: 8px; letter-spacing: .14em; }
-.wake-zone i { width: 82px; height: 48px; border: 1px dashed rgba(181,141,76,.4); border-radius: 50%; transform: rotate(-18deg); background: radial-gradient(rgba(123,105,74,.18), transparent 70%); }
+/* The chart draws itself from the system record (see art/chart.ts), so there
+   are no per-body or per-port rules here any more: a second system needs no
+   CSS of its own. What is left is the frame around the drawing and the list
+   of ports that keeps it operable without a pointer. */
+.system-chart { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 96px 28px 92px; gap: 14px; background: radial-gradient(ellipse at 50% 50%, rgba(220,169,82,.05), transparent 46%); }
+.chart-canvas { flex: 1 1 auto; width: 100%; min-height: 0; }
+.chart-ports { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.chart-ports button { display: grid; grid-template-columns: 10px auto; align-items: center; gap: 0 8px; padding: 5px 10px 5px 8px; border: 1px solid var(--line-strong); background: transparent; color: #b6b6aa; cursor: pointer; text-align: left; font-family: var(--font-mono-ui), monospace; }
+.chart-ports button::before { content: ""; grid-row: 1 / 3; align-self: center; width: 8px; height: 8px; border: 1.5px solid var(--amber); transform: rotate(45deg); }
+.chart-ports button b { color: var(--amber); font-size: 9px; font-weight: 700; letter-spacing: .12em; }
+.chart-ports button span { color: #8d968f; font-size: 8px; white-space: nowrap; }
+.chart-ports button:hover { border-color: var(--amber-deep); }
+.chart-ports button.active { border-color: var(--amber); }
+.chart-ports button.active::before { background: var(--amber); box-shadow: 0 0 14px var(--amber); }
 .map-legend { position: absolute; bottom: 22px; right: 28px; left: 28px; display: flex; justify-content: flex-end; gap: 26px; padding-top: 15px; border-top: 1px dashed var(--line-strong); color: var(--muted); font: var(--stencil); font-size: 8px; letter-spacing: .1em; }
 .map-legend i { display: inline-block; width: 7px; height: 7px; margin-right: 7px; }
 .legend-port { border: 1.5px solid var(--amber); transform: rotate(45deg); }.legend-wake { border: 1px dashed #8a744f; border-radius: 50%; }
@@ -384,12 +376,8 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
   .modal { inset: 7px; }
   .map-copy { top: 62px; left: 20px; width: calc(100% - 40px); }
   .map-copy h2 { font-size: 38px; }
-  .system-map { top: 140px; transform: scale(.76); transform-origin: center; }
-  .orbit { width: 190px; height: 190px; }.orbit-two { width: 380px; height: 380px; }.orbit-three { width: 560px; height: 560px; }
-  .map-body.star .map-planet { width: 66px; height: 66px; }
-  .map-body.cinder { left: 70%; top: 26%; }.map-body.cinder .map-planet { width: 64px; height: 64px; }
-  .map-body.morrow { left: 82%; top: 78%; }.map-body.brindle { left: 24%; top: 66%; }
-  .station-pilgrim { left: 56%; }.station-sinter { left: 80%; }.station-anvil { left: 72%; }.station-deepwell { left: 12%; }.station-bluehour { left: 74%; }.station-quiet { left: 88%; }
+  .system-chart { padding: 168px 14px 96px; gap: 10px; }
+  .chart-ports button { padding: 4px 7px 4px 6px; }
   .map-legend { justify-content: flex-start; flex-wrap: wrap; gap: 8px 18px; }
   .guide-modal { padding: 72px 22px 30px; }
   .guide-grid { grid-template-columns: 1fr; }

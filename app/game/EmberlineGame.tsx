@@ -2,23 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BODIES,
   CARGO,
-  CONTRACTS,
-  SALVAGE_ZONE,
+  DEFAULT_SYSTEM_ID,
   SHIPS,
-  STATIONS,
   UPGRADES,
-  WORLD,
+  systemById,
 } from "./data";
-import type { CargoKind, CelestialBody, ContractDefinition, ShipDefinition, Station } from "./types";
+import type { CargoKind, ContractDefinition, SalvageField, ShipDefinition, Station, StarSystem } from "./types";
 import { drawCargoUnit } from "./art/cargo";
 import { drawDebrisChunk } from "./art/debris";
-import { ATMOSPHERE_TOP, drawPlanet, planetParallax, PLANET_SCALE, SURFACE_CONTACT } from "./art/planets";
-import { CORONA_REACH, drawStar, STAR_SCALE, starLight } from "./art/star";
+import { ATMOSPHERE_TOP, drawPlanet, planetParallax, SURFACE_CONTACT } from "./art/planets";
+import { CORONA_REACH, drawStar, starLight } from "./art/star";
+import { drawChart } from "./art/chart";
 import { drawShipPortrait, shipArtFor } from "./art/ships";
 import { BERTH_CAPTURE, berthPoint, drawStation, stationColliders } from "./art/stations";
-import { bodyOrbitRadius, bodyPose, orbitRadius, stationPose, wakePose } from "./orbits";
+import { bodyOrbitRadius, bodyPose, fieldPose, orbitRadius, stationPose } from "./orbits";
 
 const TAU = Math.PI * 2;
 const SAVE_KEY = "emberline-save-v1";
@@ -108,12 +106,13 @@ const GRAVITY_REACH = 2.75;
 /**
  * Acceleration, m/s², above which a FRAGILE load starts taking damage.
  *
- * Ships make 13-19 m/s² empty and about 10 loaded (see WORLD in data.ts),
- * so the threshold has to sit under the loaded floor or fragile freight
- * would never wear in ordinary flight. 9 does that: the retro burn a
- * loaded ship uses to slow down stays under it, but the main drive does
- * not, so flying a fragile contract well means favoring the brake over
- * the throttle rather than avoiding thrust altogether.
+ * Ships make 13-19 m/s² empty and about 10 loaded (see the scale note on
+ * `bounds` in the Cinder system, data.ts), so the threshold has to sit under
+ * the loaded floor or fragile freight would never wear in ordinary flight.
+ * 9 does that: the retro burn a loaded ship uses to slow down stays under it,
+ * but the main drive does not, so flying a fragile contract well means
+ * favoring the brake over the throttle rather than avoiding thrust
+ * altogether.
  */
 const FRAGILE_LOAD_THRESHOLD = 9;
 /**
@@ -166,57 +165,58 @@ const DEADLINE_WARNING_WINDOW = 20;
 const EXPIRED_SALVAGE_VALUE_FRACTION = 0.5;
 
 /* ------------------------------------------------------------------ */
-/* The Wake                                                             */
+/* Salvage fields                                                       */
 /*                                                                      */
-/* The zone is scenery until a ship is inside it, then it is the         */
-/* sharpest risk/reward call in the game. The field is real, simulated   */
-/* debris, added to `resolveContacts`' own solids list — never a second  */
-/* damage model — so a hit is charged by the SAME closing-speed rule as  */
-/* a station or a planet. A chunk's size changes nothing about how hard  */
-/* it hits: it changes the contact radius, so a large chunk is simply    */
+/* A field is scenery until a ship is inside it, then it is the          */
+/* sharpest risk/reward call in the game. The debris is real, simulated, */
+/* added to `resolveContacts`' own solids list — never a second damage   */
+/* model — so a hit is charged by the SAME closing-speed rule as a       */
+/* station or a planet. A chunk's size changes nothing about how hard it */
+/* hits: it changes the contact radius, so a large chunk is simply       */
 /* harder to miss than a small one. Sight follows the pickups' own rule  */
 /* (215 units, 520 with a scanner) so a blind run is reckless by         */
 /* construction, not by a special case. Debris is never saved; like      */
 /* pickups and particles it re-seeds deterministically at the same       */
 /* moment salvage does, keyed off the same index arithmetic the rest of  */
-/* the seed data uses rather than Math.random, so the field is identical */
-/* every session while still being cheap to simulate.                    */
+/* the seed data uses rather than Math.random, so every field is         */
+/* identical every session while still being cheap to simulate. Each     */
+/* chunk carries the id of the field it belongs to, since a system can   */
+/* define more than one.                                                 */
 /* ------------------------------------------------------------------ */
 
-/** Hazard chunks seeded in the field. */
+/** Hazard chunks seeded in each field. */
 const DEBRIS_COUNT = 34;
 /** Smallest chunk, world units: easy to graze, a scare more than a hit. */
 const DEBRIS_MIN_RADIUS = 5;
 /** Largest chunk: bigger than any hull radius, so it is never a graze. */
 const DEBRIS_MAX_RADIUS = 30;
 /**
- * Drift speed range, one axis. The Wake is a SLOW cloud — the zone's own
- * description says so — so debris is not what closes fast on a ship; a
- * ship's own speed through the field is. Keeping drift low keeps that
- * true, and keeps the boundary bounce (see `updateDebrisField`) gentle.
+ * Drift speed range, one axis. A field is a SLOW cloud — the Wake's own
+ * description says so, and every field follows suit — so debris is not what
+ * closes fast on a ship; a ship's own speed through the field is. Keeping
+ * drift low keeps that true, and keeps the boundary bounce (see
+ * `updateDebrisField`) gentle.
  */
 const DEBRIS_MAX_DRIFT = 14;
-/** How far inside SALVAGE_ZONE's ring a chunk's own edge must stay. */
+/** How far inside a field's ring a chunk's own edge must stay. */
 const DEBRIS_EDGE_MARGIN = 0.4;
 /**
- * Range from the zone centre inside which debris is simulated at all —
- * moved, bounced, checked for contact and for discovery. Outside it the
- * per-frame cost of the whole field is one distance check. Set outside
- * SALVAGE_ZONE's own radius so the field is already live by the time a
- * ship reaches the dust ring drawn around it.
+ * Margin beyond a field's own radius inside which its debris is simulated
+ * at all — moved, bounced, checked for contact and for discovery. Outside
+ * it the per-frame cost of an unvisited field is one distance check. Set
+ * so a field is already live by the time a ship reaches the dust ring
+ * drawn around it.
  */
-const DEBRIS_ACTIVE_RANGE = SALVAGE_ZONE.radius + 260;
-/** id of the one rare recoverable seeded deep in the field. */
-const WAKE_PRIZE_ID = "salvage-wake-core";
+const DEBRIS_ACTIVE_MARGIN = 260;
 /**
- * What the listening core is worth intact, before condition. Contracts in
- * this system pay ₡1,550-7,200; this alone lands above every "standard" or
- * "express" job and below only the two hardest heavy/cryogenic contracts —
- * a single find worth a good contract's pay, in a system that can now cost
- * you hull to reach. See the constants above: SCUFF_SPEED is what a careful
- * approach costs (nothing), SHED_SPEED is what a careless one risks.
+ * What a field's own rare recoverable is worth intact, before condition.
+ * Contracts in this system pay ₡1,550-7,200; this alone lands above every
+ * "standard" or "express" job and below only the two hardest heavy/cryogenic
+ * contracts — a single find worth a good contract's pay, in a system that can
+ * cost you hull to reach it. See the constants above: SCUFF_SPEED is what a
+ * careful approach costs (nothing), SHED_SPEED is what a careless one risks.
  */
-const WAKE_PRIZE_VALUE = 6200;
+const FIELD_PRIZE_VALUE = 6200;
 
 type CargoItem = {
   id: string;
@@ -235,15 +235,18 @@ type Pickup = CargoItem & {
   angle: number;
   discovered: boolean;
   /**
-   * Held in a moving frame, as an offset from it. `frame` is a station id for
-   * freight standing on a pad, or "wake" for salvage lying in the debris
-   * cloud. Everything in this system orbits, so anything set down has to ride
-   * with whatever it was set down on rather than being left behind in empty
-   * space the moment that thing moves on. Cleared the instant a unit is
-   * clamped or shaken loose, after which it is an ordinary object with its
-   * own velocity.
+   * Held in a moving frame, as an offset from it. `frame` is the id of
+   * whatever it was set down on: a station's pad for freight, or a salvage
+   * field's cloud for salvage. Stations and fields share one id namespace —
+   * see `framePose` — so a single id is enough to say which. Everything in
+   * this system orbits, so anything set down has to ride with its frame
+   * rather than being left behind in empty space the moment that frame moves
+   * on. Cleared the instant a unit is clamped or shaken loose, after which it
+   * is an ordinary object with its own velocity.
    */
   anchor?: { frame: string; dx: number; dy: number };
+  /** Marks a field's own rare recoverable, for the message shown on clamping it. */
+  prize?: true;
 };
 
 type Particle = {
@@ -257,9 +260,11 @@ type Particle = {
   color: string;
 };
 
-/** One chunk of the Wake's hazard field: solid, unpowered, un-grabbable. */
+/** One chunk of a salvage field's hazard cloud: solid, unpowered, un-grabbable. */
 type Debris = {
-  /** Offset from the Wake's centre, not a world position: the cloud orbits. */
+  /** Which field this chunk belongs to; a system can define more than one. */
+  fieldId: string;
+  /** Offset from the field's centre, not a world position: the cloud orbits. */
   x: number;
   y: number;
   /** Drift within the cloud. The cloud's own motion is added at the point of use. */
@@ -289,6 +294,8 @@ type ShipPose = {
 };
 
 type GameMutable = {
+  /** Which system this shift is played in. See `systemById` and `DEFAULT_SYSTEM_ID` in `data.ts`. */
+  systemId: string;
   ship: { x: number; y: number; vx: number; vy: number; angle: number; av: number; fuel: number; hull: number };
   shipId: ShipDefinition["id"];
   dockedId: string | null;
@@ -319,6 +326,7 @@ type GameMutable = {
 };
 
 type UiSnapshot = {
+  systemId: string;
   speed: number;
   fuel: number;
   hull: number;
@@ -340,6 +348,8 @@ type UiSnapshot = {
   distance: number;
   /** Speed relative to the targeted port: what a clean arrival is measured by. */
   closing: number;
+  /** Shift clock, so the chart can place a system that is still turning. */
+  elapsed: number;
   loadingRemaining: number;
 };
 
@@ -354,9 +364,12 @@ type AudioRig = {
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const distance = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
-const stationById = (id: string | null) => STATIONS.find((station) => station.id === id);
+const stationById = (system: StarSystem, id: string | null) => system.stations.find((station) => station.id === id);
 const shipById = (id: ShipDefinition["id"]) => SHIPS.find((ship) => ship.id === id) ?? SHIPS[0];
-const contractById = (id: string | null) => CONTRACTS.find((contract) => contract.id === id);
+const contractById = (system: StarSystem, id: string | null) => system.contracts.find((contract) => contract.id === id);
+const fieldById = (system: StarSystem, id: string) => system.fields.find((field) => field.id === id);
+/** The system a game or save is playing in, falling back to the default if the id is missing or stale. */
+const activeSystem = (systemId: string) => systemById(systemId) ?? systemById(DEFAULT_SYSTEM_ID)!;
 /** Signed, because an account can be overdrawn and has to look overdrawn. */
 const money = (value: number) => {
   const rounded = Math.round(value);
@@ -371,7 +384,7 @@ const seconds = (value: number) => `${Math.max(0, Math.floor(value / 60))}:${Str
 /* Kestrel low left, engine lit, nose on Pilgrim Exchange, with Cinder   */
 /* filling the right edge. See SPEC / ART_DIRECTION.md.                  */
 /* ------------------------------------------------------------------ */
-const TITLE_STATION = STATIONS[0];
+const TITLE_STATION = activeSystem(DEFAULT_SYSTEM_ID).stations[0];
 const TITLE_CARGO: CargoItem[] = [
   { id: "title-water", kind: "water", condition: 1, source: "contract", value: 0 },
   { id: "title-metals", kind: "metals", condition: 1, source: "contract", value: 0 },
@@ -419,13 +432,15 @@ function titleShipPose(anchor: { x: number; y: number }, scale: number, time: nu
 }
 
 function freshGame(): GameMutable {
-  const start = STATIONS[0];
+  const system = activeSystem(DEFAULT_SYSTEM_ID);
+  const start = system.stations[0];
   const berth = berthPoint(start, 100);
   return {
+    systemId: system.id,
     ship: { x: berth.x, y: berth.y, vx: 0, vy: 0, angle: start.orientation, av: 0, fuel: SHIPS[0].fuelCapacity, hull: 100 },
     shipId: "courier",
     dockedId: start.id,
-    targetId: STATIONS[1].id,
+    targetId: system.stations[1].id,
     activeContractId: null,
     contractTime: 0,
     contractDeadline: 0,
@@ -458,11 +473,16 @@ function safeLoad(): GameMutable | null {
     const saved = JSON.parse(raw) as Partial<GameMutable>;
     const base = freshGame();
     const game = { ...base, ...saved, ship: { ...base.ship, ...saved.ship }, particles: [] as Particle[], pickups: [] as Pickup[], debris: [] as Debris[] };
+    /* A save from before systemId existed, or one naming a system that has
+       since been removed, falls back to the default rather than crashing
+       every lookup below. */
+    if (!systemById(game.systemId)) game.systemId = DEFAULT_SYSTEM_ID;
+    const system = activeSystem(game.systemId);
     if (!SHIPS.some((ship) => ship.id === game.shipId)) return null;
-    if (!stationById(game.dockedId) && game.dockedId) game.dockedId = "pilgrim";
+    if (!stationById(system, game.dockedId) && game.dockedId) game.dockedId = system.stations[0].id;
     if (game.dockedId) {
-      const station = stationById(game.dockedId) ?? STATIONS[0];
-      const pose = stationPose(station, game.elapsed);
+      const station = stationById(system, game.dockedId) ?? system.stations[0];
+      const pose = stationPose(system, station, game.elapsed);
       const berth = berthPoint(station, 100, pose);
       game.ship.x = berth.x;
       game.ship.y = berth.y;
@@ -470,7 +490,7 @@ function safeLoad(): GameMutable | null {
       game.ship.vx = pose.vx;
       game.ship.vy = pose.vy;
     }
-    const active = contractById(game.activeContractId);
+    const active = contractById(system, game.activeContractId);
     if (active) {
       /* An older save, or one from between saves, may carry no deadline or
          a stale one. There is no way to know how long the contract has
@@ -479,12 +499,12 @@ function safeLoad(): GameMutable | null {
       if (active.timeLimit && game.contractDeadline <= 0) {
         game.contractDeadline = active.timeLimit * DEADLINE_MULTIPLIER;
       }
-      const origin = stationById(active.origin);
+      const origin = stationById(system, active.origin);
       if (origin) {
         /* Whatever was not clamped before the shift ended is back on its pad,
            which is where the incomplete-manifest message already sends you. */
         const alreadyLoaded = game.cargo.filter((item) => item.source === "contract").length;
-        game.pickups.push(...stagedPickups(active, origin, game.elapsed, alreadyLoaded));
+        game.pickups.push(...stagedPickups(system, active, origin, game.elapsed, alreadyLoaded));
       }
     }
     return game;
@@ -501,8 +521,8 @@ function safeLoad(): GameMutable | null {
  * within a minute. The anchor is a plain offset because a station's bearing
  * never changes, only where it is.
  */
-function stagedPickups(contract: ContractDefinition, station: Station, time: number, fromIndex = 0): Pickup[] {
-  const pose = stationPose(station, time);
+function stagedPickups(system: StarSystem, contract: ContractDefinition, station: Station, time: number, fromIndex = 0): Pickup[] {
+  const pose = stationPose(system, station, time);
   // clear of the lengthened berth: the same 24 units beyond the pad edge the staging always had
   const staging = berthPoint(station, 182, pose);
   const cargo = CARGO[contract.cargo];
@@ -531,10 +551,12 @@ function stagedPickups(contract: ContractDefinition, station: Station, time: num
 }
 
 function snapshot(game: GameMutable): UiSnapshot {
-  const target = stationById(game.targetId);
-  const targetPose = target ? stationPose(target, game.elapsed) : null;
-  const active = contractById(game.activeContractId);
+  const system = activeSystem(game.systemId);
+  const target = stationById(system, game.targetId);
+  const targetPose = target ? stationPose(system, target, game.elapsed) : null;
+  const active = contractById(system, game.activeContractId);
   return {
+    systemId: game.systemId,
     speed: Math.hypot(game.ship.vx, game.ship.vy),
     fuel: game.ship.fuel,
     hull: game.ship.hull,
@@ -555,6 +577,7 @@ function snapshot(game: GameMutable): UiSnapshot {
     message: game.message,
     distance: targetPose ? distance(game.ship, targetPose) : 0,
     closing: targetPose ? Math.hypot(game.ship.vx - targetPose.vx, game.ship.vy - targetPose.vy) : 0,
+    elapsed: game.elapsed,
     loadingRemaining: active ? Math.max(0, active.quantity - game.cargo.filter((item) => item.source === "contract").length) : 0,
   };
 }
@@ -565,34 +588,32 @@ function saveGame(game: GameMutable) {
   localStorage.setItem(SAVE_KEY, JSON.stringify(serializable));
 }
 
-function makeSalvage(): Pickup[] {
+function makeSalvage(field: SalvageField): Pickup[] {
   const kinds: CargoKind[] = ["components", "electronics", "ore", "science", "machinery", "metals"];
   const common: Pickup[] = kinds.map((kind, index) => {
     const angle = index * 2.17 + 0.4;
     const radius = 140 + (index * 97) % 430;
     return {
-      id: `salvage-${index}`,
+      id: `salvage-${field.id}-${index}`,
       kind,
       condition: 0.55 + (index % 4) * 0.11,
       source: "salvage",
       value: CARGO[kind].value * (1.1 + index * 0.18),
-      x: SALVAGE_ZONE.center.x + Math.cos(angle) * radius,
-      y: SALVAGE_ZONE.center.y + Math.sin(angle) * radius,
+      x: field.center.x + Math.cos(angle) * radius,
+      y: field.center.y + Math.sin(angle) * radius,
       vx: 0,
       vy: 0,
       spin: (index % 2 ? -1 : 1) * (0.08 + index * 0.015),
       angle,
       discovered: false,
-      /* Held in the cloud rather than drifting freely in it: the Wake orbits,
-         and a recoverable left at a fixed point would be a thousand units
-         behind the debris it belongs to within a minute. The tumbling the
-         zone is named for is the debris field's job, not the salvage's. */
-      anchor: { frame: "wake", dx: Math.cos(angle) * radius, dy: Math.sin(angle) * radius },
+      /* Held in the field rather than drifting freely in it: the field
+         orbits, and a recoverable left at a fixed point would be a
+         thousand units behind the debris it belongs to within a minute. */
+      anchor: { frame: field.id, dx: Math.cos(angle) * radius, dy: Math.sin(angle) * radius },
     };
   });
   /*
-   * The Wake's own description promises "one persistent unknown return":
-   * a single rare recoverable, seeded close to the zone centre rather than
+   * Every field seeds one rare recoverable near its own centre rather than
    * spread across it like the common salvage above, so reaching it means
    * crossing the densest part of the debris field (see makeDebris) instead
    * of skimming the rim. It is otherwise an ordinary salvage pickup — same
@@ -601,40 +622,42 @@ function makeSalvage(): Pickup[] {
    * chest with its own rules.
    */
   const prize: Pickup = {
-    id: WAKE_PRIZE_ID,
+    id: `salvage-${field.id}-core`,
     kind: "science",
     condition: 0.94,
     source: "salvage",
-    value: WAKE_PRIZE_VALUE,
-    x: SALVAGE_ZONE.center.x + Math.cos(0.83) * SALVAGE_ZONE.radius * 0.16,
-    y: SALVAGE_ZONE.center.y + Math.sin(0.83) * SALVAGE_ZONE.radius * 0.16,
+    value: FIELD_PRIZE_VALUE,
+    x: field.center.x + Math.cos(0.83) * field.radius * 0.16,
+    y: field.center.y + Math.sin(0.83) * field.radius * 0.16,
     vx: 0,
     vy: 0,
     spin: 0.05,
     angle: 0.83,
     discovered: false,
-    anchor: { frame: "wake", dx: Math.cos(0.83) * SALVAGE_ZONE.radius * 0.16, dy: Math.sin(0.83) * SALVAGE_ZONE.radius * 0.16 },
+    anchor: { frame: field.id, dx: Math.cos(0.83) * field.radius * 0.16, dy: Math.sin(0.83) * field.radius * 0.16 },
+    prize: true,
   };
   return [...common, prize];
 }
 
 /**
- * The Wake's hazard field: real objects with position, velocity and spin,
+ * One field's hazard cloud: real objects with position, velocity and spin,
  * seeded the same way the common salvage above is — index arithmetic, never
  * Math.random, so a fresh session and a loaded one scatter identically.
  * Radius is sampled uniformly in r rather than in area, which (unlike a
  * true uniform disc, which would use sqrt) naturally packs more chunks per
  * unit area near the centre than at the rim: the field gets thicker on the
  * way to the prize `makeSalvage` seeds deep inside it, not thinner.
- * `updateDebrisField` keeps every chunk drifting and bounces it off
- * SALVAGE_ZONE's boundary, so the cloud never disperses over a session.
+ * `updateDebrisField` keeps every chunk drifting and bounces it off the
+ * field's own boundary, so the cloud never disperses over a session.
  */
-function makeDebris(): Debris[] {
+function makeDebris(field: SalvageField): Debris[] {
   return Array.from({ length: DEBRIS_COUNT }, (_, index) => {
     const angle = index * 2.399 + 1.1;
-    const radius = (index * 71 + 30) % (SALVAGE_ZONE.radius - 40);
+    const radius = (index * 71 + 30) % (field.radius - 40);
     const drift = index * 1.777 + 0.5;
     return {
+      fieldId: field.id,
       x: Math.cos(angle) * radius,
       y: Math.sin(angle) * radius,
       vx: Math.cos(drift) * (2 + (index * 7) % DEBRIS_MAX_DRIFT),
@@ -769,17 +792,52 @@ function CargoPortrait({ kind, count = 1, condition = 1 }: { kind: CargoKind; co
   return <canvas ref={ref} className="cargo-portrait portrait" aria-hidden="true" />;
 }
 
-/** A body from the flight view, fitted into a square with its atmosphere. */
-function PlanetPortrait({ body }: { body: CelestialBody }) {
+/**
+ * The navigation chart.
+ *
+ * The drawing is a canvas so it can come straight from the system record —
+ * see `art/chart.ts`. The ports are still real buttons underneath it, because
+ * a canvas cannot be tabbed to or read aloud, and choosing a destination is
+ * the one thing this dialog exists to do.
+ */
+function SystemChart({ system, time, targetId, onSelect }: {
+  system: StarSystem;
+  time: number;
+  targetId: string;
+  onSelect: (id: string) => void;
+}) {
+  const poseOf = useCallback((id: string) => {
+    const body = system.bodies.find((item) => item.id === id);
+    if (body) return bodyPose(system, body, time);
+    const station = system.stations.find((item) => item.id === id);
+    if (station) return stationPose(system, station, time);
+    const field = system.fields.find((item) => item.id === id);
+    if (field) return fieldPose(system, field, time);
+    return { x: 0, y: 0, vx: 0, vy: 0 };
+  }, [system, time]);
+
   const ref = usePortrait((ctx, width, height) => {
-    const drawn = body.star ? STAR_SCALE * 1.9 : PLANET_SCALE * 1.18;
-    const fit = Math.min(width, height) / 2 / (body.radius * drawn);
     ctx.translate(width / 2, height / 2);
-    ctx.scale(fit, fit);
-    if (body.star) drawStar(ctx, body, { time: 1, zoom: fit });
-    else drawPlanet(ctx, body, { time: 1, zoom: fit });
-  }, [body]);
-  return <canvas ref={ref} className="map-planet portrait" aria-hidden="true" />;
+    drawChart(ctx, system, Math.min(width, height) / 2 - 30, { time, targetId, poseOf });
+  }, [system, time, targetId, poseOf]);
+
+  return (
+    <div className="system-chart">
+      <canvas ref={ref} className="chart-canvas" aria-hidden="true" />
+      <div className="chart-ports" role="group" aria-label="Set destination beacon">
+        {system.stations.map((station) => (
+          <button
+            key={station.id}
+            className={station.id === targetId ? "active" : ""}
+            onClick={() => onSelect(station.id)}
+          >
+            <b>{station.callSign}</b>
+            <span>{station.name}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export default function EmberlineGame() {
@@ -840,6 +898,7 @@ export default function EmberlineGame() {
 
   const stageContract = useCallback((contract: ContractDefinition) => {
     const game = gameRef.current;
+    const system = activeSystem(game.systemId);
     const ship = shipById(game.shipId);
     const cargo = CARGO[contract.cargo];
     if (game.activeContractId) return notify("Complete or abandon the active contract first.");
@@ -849,22 +908,23 @@ export default function EmberlineGame() {
     if ((contract.minSlots ?? contract.quantity) > ship.slots + (game.upgrades.includes("clamps") ? 1 : 0)) return notify("This load needs more cargo clamps.");
     if (contract.requiredShip && contract.requiredShip !== game.shipId) return notify(`Dispatch requires the ${shipById(contract.requiredShip).name} tug.`);
     if (contract.kind === "cryogenic" && !game.upgrades.includes("cryo")) return notify("A powered cryogenic umbilical is required.");
-    const station = stationById(contract.origin)!;
+    const station = stationById(system, contract.origin)!;
     game.activeContractId = contract.id;
     game.contractTime = contract.timeLimit ?? 0;
     game.contractDeadline = contract.timeLimit ? contract.timeLimit * DEADLINE_MULTIPLIER : 0;
     game.targetId = contract.destination;
-    game.pickups = stagedPickups(contract, station, game.elapsed);
+    game.pickups = stagedPickups(system, contract, station, game.elapsed);
     audio.tone("ui", muted);
     notify(`${cargo.name} staged outside. Undock, drift close, then clamp each unit.`);
   }, [audio, muted, notify]);
 
   const undock = useCallback(() => {
     const game = gameRef.current;
-    const station = stationById(game.dockedId);
+    const system = activeSystem(game.systemId);
+    const station = stationById(system, game.dockedId);
     if (!station) return;
     game.dockedId = null;
-    const pose = stationPose(station, game.elapsed);
+    const pose = stationPose(system, station, game.elapsed);
     const clear = berthPoint(station, 105, pose);
     const heading = station.orientation + Math.PI;
     game.ship.x = clear.x;
@@ -915,7 +975,7 @@ export default function EmberlineGame() {
   const buyUpgrade = useCallback((id: string) => {
     const game = gameRef.current;
     const upgrade = UPGRADES.find((item) => item.id === id);
-    const station = stationById(game.dockedId);
+    const station = stationById(activeSystem(game.systemId), game.dockedId);
     if (!upgrade || !station?.services.includes("upgrades")) return notify("Upgrade work is only available at a fitted yard.");
     if (game.upgrades.includes(id)) return;
     if (game.credits < 0) return notify("The yard will not open a refit against an overdrawn account.");
@@ -929,7 +989,7 @@ export default function EmberlineGame() {
 
   const buyOrSwitchShip = useCallback((id: ShipDefinition["id"]) => {
     const game = gameRef.current;
-    const station = stationById(game.dockedId);
+    const station = stationById(activeSystem(game.systemId), game.dockedId);
     const ship = shipById(id);
     if (!station?.services.includes("ships")) return notify("Owned vessels are berthed at Anvil Gate.");
     if (game.activeContractId || game.cargo.length) return notify("Unload the current ship before changing vessels.");
@@ -950,9 +1010,10 @@ export default function EmberlineGame() {
 
   const emergencyTow = useCallback(() => {
     const game = gameRef.current;
+    const system = activeSystem(game.systemId);
     const cost = TOW_FEE;
-    const station = STATIONS[0];
-    const pose = stationPose(station, game.elapsed);
+    const station = system.stations[0];
+    const pose = stationPose(system, station, game.elapsed);
     const berth = berthPoint(station, 100, pose);
     game.credits -= cost;
     game.ship = { x: berth.x, y: berth.y, vx: pose.vx, vy: pose.vy, angle: station.orientation, av: 0, fuel: Math.max(20, shipById(game.shipId).fuelCapacity * 0.18), hull: Math.max(35, game.ship.hull) };
@@ -1019,6 +1080,7 @@ export default function EmberlineGame() {
         undock();
         return;
       }
+      const system = activeSystem(game.systemId);
       const shipDef = shipById(game.shipId);
       const slots = shipDef.slots + (game.upgrades.includes("clamps") ? 1 : 0);
       const nearest = game.pickups
@@ -1035,19 +1097,19 @@ export default function EmberlineGame() {
         game.shake = 5;
         audio.tone("clamp", muted);
         if (nearest.pickup.source === "salvage") {
-          notify(nearest.pickup.id === WAKE_PRIZE_ID
+          notify(nearest.pickup.prize
             ? "Whatever it is, it's still faintly warm. Deliver it to any port and let someone with the right instruments tell you what you found."
             : `${CARGO[nearest.pickup.kind].name} secured. Deliver it to any port for assessment.`);
         } else {
-          const active = contractById(game.activeContractId);
+          const active = contractById(system, game.activeContractId);
           const loaded = game.cargo.filter((item) => item.source === "contract").length;
           notify(loaded >= (active?.quantity ?? 0) ? "Load secure. Destination beacon is active." : `Clamp ${loaded} secure. Collect the remaining unit.`);
         }
         return;
       }
-      const nearbyStation = STATIONS
+      const nearbyStation = system.stations
         .map((station) => {
-          const pose = stationPose(station, game.elapsed);
+          const pose = stationPose(system, station, game.elapsed);
           return { station, pose, dist: distance(game.ship, pose) };
         })
         .sort((a, b) => a.dist - b.dist)[0];
@@ -1061,8 +1123,9 @@ export default function EmberlineGame() {
     };
 
     const dock = (game: GameMutable, station: Station) => {
+      const system = activeSystem(game.systemId);
       game.dockedId = station.id;
-      const pose = stationPose(station, game.elapsed);
+      const pose = stationPose(system, station, game.elapsed);
       const berth = berthPoint(station, 100, pose);
       game.ship.x = berth.x;
       game.ship.y = berth.y;
@@ -1089,7 +1152,7 @@ export default function EmberlineGame() {
         note = `Salvage assessed: ${money(salvagePay)} credited.`;
       }
 
-      const contract = contractById(game.activeContractId);
+      const contract = contractById(system, game.activeContractId);
       if (contract && contract.destination === station.id) {
         const carried = game.cargo.filter((item) => item.source === "contract");
         if (carried.length >= contract.quantity) {
@@ -1170,11 +1233,17 @@ export default function EmberlineGame() {
       notify(`${contract.title} missed its deadline. Dispatch voids the manifest and bills ${money(penalty)}; any freight aboard is marked down to salvage. Account stands at ${money(game.credits)}.`, 8);
     };
 
-    /** Where a held object's frame is now: a port's pad, or the debris cloud. */
-    const framePose = (frame: string, time: number) => {
-      if (frame === "wake") return wakePose(time);
-      const station = stationById(frame);
-      return station ? stationPose(station, time) : null;
+    /**
+     * Where a held object's frame is now: a station's pad, or a salvage
+     * field's cloud. Stations and fields share one id namespace, so a single
+     * lookup by id can resolve `anchor.frame` against either without the
+     * caller knowing which kind it names.
+     */
+    const framePose = (system: StarSystem, frame: string, time: number) => {
+      const station = stationById(system, frame);
+      if (station) return stationPose(system, station, time);
+      const field = fieldById(system, frame);
+      return field ? fieldPose(system, field, time) : null;
     };
 
     /** A standing warning that repeats no more often than WARNING_INTERVAL. */
@@ -1273,16 +1342,17 @@ export default function EmberlineGame() {
      * where its painted surface appears rather than at its raw radius.
      */
     const resolveContacts = (game: GameMutable, hullRadius: number) => {
+      const system = activeSystem(game.systemId);
       const solids: { x: number; y: number; r: number; vx: number; vy: number; what: string }[] = [];
-      for (const station of STATIONS) {
-        const pose = stationPose(station, game.elapsed);
+      for (const station of system.stations) {
+        const pose = stationPose(system, station, game.elapsed);
         if (distance(game.ship, pose) > 320) continue;
         for (const circle of stationColliders(station, pose)) {
           solids.push({ ...circle, vx: pose.vx, vy: pose.vy, what: `Contact with ${station.name} structure` });
         }
       }
-      for (const body of BODIES) {
-        const at = bodyPose(body, game.elapsed);
+      for (const body of system.bodies) {
+        const at = bodyPose(system, body, game.elapsed);
         solids.push({
           x: at.x,
           y: at.y,
@@ -1292,20 +1362,22 @@ export default function EmberlineGame() {
           what: body.star ? `Contact with ${body.name} itself` : `Surface contact on ${body.name}`,
         });
       }
-      /* The Wake's hazard field only joins the list this close to it, so a
+      /* A field's hazard cloud only joins the list this close to it, so a
          ship anywhere else in the system pays nothing for 30-plus circles
          it could never reach. Reuses this same loop and applyImpact below —
          a debris hit is a contact like any other, not a second damage rule. */
-      const cloud = wakePose(game.elapsed);
-      if (distance(game.ship, cloud) < DEBRIS_ACTIVE_RANGE) {
+      for (const field of system.fields) {
+        const cloud = fieldPose(system, field, game.elapsed);
+        if (distance(game.ship, cloud) >= field.radius + DEBRIS_ACTIVE_MARGIN) continue;
         for (const chunk of game.debris) {
+          if (chunk.fieldId !== field.id) continue;
           solids.push({
             x: cloud.x + chunk.x,
             y: cloud.y + chunk.y,
             r: chunk.r,
             vx: cloud.vx + chunk.vx,
             vy: cloud.vy + chunk.vy,
-            what: "Debris strike in the Wake",
+            what: `Debris strike in ${field.name}`,
           });
         }
       }
@@ -1341,13 +1413,14 @@ export default function EmberlineGame() {
      * shed speed without spending propellant.
      */
     const applyAtmosphere = (game: GameMutable, dt: number) => {
-      for (const body of BODIES) {
+      const system = activeSystem(game.systemId);
+      for (const body of system.bodies) {
         if (!body.atmosphere) continue;
         /* The star gets the same treatment as a sky, at a radius set by where
            its glow visibly ends and at a heat no atmosphere reaches: the
            corona is a warning you have seconds to act on, not minutes. */
         const top = body.star ? body.radius * CORONA_REACH * 1.6 : body.radius * ATMOSPHERE_TOP;
-        const at = bodyPose(body, game.elapsed);
+        const at = bodyPose(system, body, game.elapsed);
         const dist = distance(game.ship, at);
         if (dist > top) continue;
         const heatScale = body.star ? 6 : 1;
@@ -1385,41 +1458,45 @@ export default function EmberlineGame() {
     };
 
     /**
-     * Drifts the Wake's hazard field and keeps it inside SALVAGE_ZONE: a
-     * chunk that reaches the boundary bounces off it rather than escaping,
-     * so the cloud never disperses over a session. Gated the same way
+     * Drifts every field's hazard cloud and keeps each chunk inside its own
+     * field: a chunk that reaches the boundary bounces off it rather than
+     * escaping, so no cloud disperses over a session. Gated the same way
      * `resolveContacts` gates debris contact, and for the same reason — a
-     * ship elsewhere in the system does not pay to simulate 30-plus objects
-     * it cannot see or reach. Discovery follows the pickups' own rule (215
-     * units, 520 with the scanner upgrade), so an unlit chunk is invisible
-     * right up until it is either close or scanned — not before.
+     * ship far from a field does not pay to simulate the 30-plus objects in
+     * it. Discovery follows the pickups' own rule (215 units, 520 with the
+     * scanner upgrade), so an unlit chunk is invisible right up until it is
+     * either close or scanned — not before.
      */
     const updateDebrisField = (game: GameMutable, dt: number) => {
-      const cloud = wakePose(game.elapsed);
-      if (distance(game.ship, cloud) >= DEBRIS_ACTIVE_RANGE) return;
+      const system = activeSystem(game.systemId);
       const scanRange = game.upgrades.includes("scanner") ? 520 : 215;
-      /* Worked entirely in the cloud's own frame, so the tumbling is the
-         tumbling a pilot sees on the way in and none of it has to be undone
-         as the Wake carries the whole field around its lane. */
-      game.debris.forEach((chunk) => {
-        chunk.x += chunk.vx * dt;
-        chunk.y += chunk.vy * dt;
-        chunk.angle += chunk.spin * dt;
-        const dist = Math.hypot(chunk.x, chunk.y);
-        const limit = SALVAGE_ZONE.radius - chunk.r * DEBRIS_EDGE_MARGIN;
-        if (dist > limit && dist > 0.001) {
-          const nx = chunk.x / dist;
-          const ny = chunk.y / dist;
-          chunk.x = nx * limit;
-          chunk.y = ny * limit;
-          const into = chunk.vx * nx + chunk.vy * ny;
-          if (into > 0) {
-            chunk.vx -= 2 * into * nx;
-            chunk.vy -= 2 * into * ny;
+      for (const field of system.fields) {
+        const cloud = fieldPose(system, field, game.elapsed);
+        if (distance(game.ship, cloud) >= field.radius + DEBRIS_ACTIVE_MARGIN) continue;
+        /* Worked entirely in the cloud's own frame, so the tumbling is the
+           tumbling a pilot sees on the way in and none of it has to be undone
+           as the field carries the whole cloud around its lane. */
+        for (const chunk of game.debris) {
+          if (chunk.fieldId !== field.id) continue;
+          chunk.x += chunk.vx * dt;
+          chunk.y += chunk.vy * dt;
+          chunk.angle += chunk.spin * dt;
+          const dist = Math.hypot(chunk.x, chunk.y);
+          const limit = field.radius - chunk.r * DEBRIS_EDGE_MARGIN;
+          if (dist > limit && dist > 0.001) {
+            const nx = chunk.x / dist;
+            const ny = chunk.y / dist;
+            chunk.x = nx * limit;
+            chunk.y = ny * limit;
+            const into = chunk.vx * nx + chunk.vy * ny;
+            if (into > 0) {
+              chunk.vx -= 2 * into * nx;
+              chunk.vy -= 2 * into * ny;
+            }
           }
+          if (distance(game.ship, { x: cloud.x + chunk.x, y: cloud.y + chunk.y }) < scanRange) chunk.discovered = true;
         }
-        if (distance(game.ship, { x: cloud.x + chunk.x, y: cloud.y + chunk.y }) < scanRange) chunk.discovered = true;
-      });
+      }
     };
 
     /* The truck in the title composition burns while the simulation is idle. */
@@ -1450,15 +1527,23 @@ export default function EmberlineGame() {
     };
 
     const update = (game: GameMutable, dt: number) => {
-      game.elapsed += dt;
+      const running = screen === "game" && !game.paused && !mapOpen && !helpOpen;
+      /* The clock only runs while the ship does. Every position in the system
+         is derived from `elapsed`, so letting it advance behind an open chart
+         would let a pilot hold the map up and wait for the destination to
+         orbit to them, at no cost in time or propellant. The title screen is
+         the exception: nothing is at stake there and its composition needs a
+         clock to breathe. */
+      if (running || screen === "title") game.elapsed += dt;
+      const system = activeSystem(game.systemId);
       if (!salvageSeededRef.current) {
         const recovered = new Set(game.discovered.filter((id) => id.startsWith("recovered:" )).map((id) => id.slice(10)));
-        game.pickups.push(...makeSalvage().filter((pickup) => !recovered.has(pickup.id)));
+        game.pickups.push(...system.fields.flatMap((field) => makeSalvage(field).filter((pickup) => !recovered.has(pickup.id))));
         // Debris carries no recovered state of its own — it is scenery to dodge, not cargo to keep — so it always re-seeds in full.
-        game.debris = makeDebris();
+        game.debris = system.fields.flatMap((field) => makeDebris(field));
         salvageSeededRef.current = true;
       }
-      if (screen !== "game" || game.paused || mapOpen || helpOpen) {
+      if (!running) {
         audio.setEngine(0, muted);
         if (screen === "title") titleExhaust(game, dt);
         return;
@@ -1468,9 +1553,9 @@ export default function EmberlineGame() {
         audio.setEngine(0, muted);
         /* Berthed: the port is in orbit, so the ship rides it rather than
            hanging at a fixed point while its own dock travels away. */
-        const berthedAt = stationById(game.dockedId);
+        const berthedAt = stationById(system, game.dockedId);
         if (berthedAt) {
-          const pose = stationPose(berthedAt, game.elapsed);
+          const pose = stationPose(system, berthedAt, game.elapsed);
           const berth = berthPoint(berthedAt, 100, pose);
           game.ship.x = berth.x;
           game.ship.y = berth.y;
@@ -1488,7 +1573,7 @@ export default function EmberlineGame() {
         return;
       }
 
-      const active = contractById(game.activeContractId);
+      const active = contractById(system, game.activeContractId);
       if (active?.timeLimit) {
         if (game.contractTime > 0) game.contractTime = Math.max(0, game.contractTime - dt);
         game.contractDeadline = Math.max(0, game.contractDeadline - dt);
@@ -1556,8 +1641,8 @@ export default function EmberlineGame() {
       game.ship.av = clamp(game.ship.av, -2.6, 2.6);
       game.ship.angle += game.ship.av * dt;
 
-      for (const body of BODIES) {
-        const at = bodyPose(body, game.elapsed);
+      for (const body of system.bodies) {
+        const at = bodyPose(system, body, game.elapsed);
         const dx = at.x - game.ship.x;
         const dy = at.y - game.ship.y;
         const distSq = dx * dx + dy * dy;
@@ -1592,15 +1677,15 @@ export default function EmberlineGame() {
 
       game.ship.x += game.ship.vx * dt;
       game.ship.y += game.ship.vy * dt;
-      if (Math.abs(game.ship.x) > WORLD.width / 2 || Math.abs(game.ship.y) > WORLD.height / 2) {
-        game.ship.vx += (-game.ship.x / WORLD.width) * 6 * dt;
-        game.ship.vy += (-game.ship.y / WORLD.height) * 6 * dt;
+      if (Math.abs(game.ship.x) > system.bounds.width / 2 || Math.abs(game.ship.y) > system.bounds.height / 2) {
+        game.ship.vx += (-game.ship.x / system.bounds.width) * 6 * dt;
+        game.ship.vy += (-game.ship.y / system.bounds.height) * 6 * dt;
       }
       updateDebrisField(game, dt);
       resolveContacts(game, HULL_RADIUS[shipDef.size]);
 
       game.pickups.forEach((pickup) => {
-        const held = pickup.anchor ? framePose(pickup.anchor.frame, game.elapsed) : null;
+        const held = pickup.anchor ? framePose(system, pickup.anchor.frame, game.elapsed) : null;
         if (pickup.anchor && held) {
           pickup.x = held.x + pickup.anchor.dx;
           pickup.y = held.y + pickup.anchor.dy;
@@ -1642,13 +1727,14 @@ export default function EmberlineGame() {
         game.cargo = [];
         game.pickups = [];
         game.activeContractId = null;
-        const home = stationPose(STATIONS[0], game.elapsed);
-        const rescue = berthPoint(STATIONS[0], 100, home);
-        game.ship = { x: rescue.x, y: rescue.y, vx: home.vx, vy: home.vy, angle: STATIONS[0].orientation, av: 0, fuel: 24, hull: 52 };
-        game.dockedId = "pilgrim";
+        const homeStation = system.stations[0];
+        const home = stationPose(system, homeStation, game.elapsed);
+        const rescue = berthPoint(homeStation, 100, home);
+        game.ship = { x: rescue.x, y: rescue.y, vx: home.vx, vy: home.vy, angle: homeStation.orientation, av: 0, fuel: 24, hull: 52 };
+        game.dockedId = homeStation.id;
         salvageSeededRef.current = false;
         saveGame(game);
-        notify(`Hull lost to ${lastHarmRef.current}. Pilgrim recovered the wreck. Excess ${money(INSURANCE_EXCESS)}; account stands at ${money(game.credits)}.`, 9);
+        notify(`Hull lost to ${lastHarmRef.current}. ${homeStation.name} recovered the wreck. Excess ${money(INSURANCE_EXCESS)}; account stands at ${money(game.credits)}.`, 9);
       }
 
       if (actionRequestRef.current || (keysRef.current[" "] && !actionLatchRef.current)) {
@@ -1728,13 +1814,14 @@ export default function EmberlineGame() {
       context.fillStyle = bg;
       context.fillRect(0, 0, width, height);
 
+      const system = activeSystem(game.systemId);
       const cam = cameraRef.current;
       const speed = Math.hypot(game.ship.vx, game.ship.vy);
-      const target = stationById(game.targetId);
-      const targetPose = target ? stationPose(target, game.elapsed) : null;
+      const target = stationById(system, game.targetId);
+      const targetPose = target ? stationPose(system, target, game.elapsed) : null;
       const targetDist = targetPose ? distance(game.ship, targetPose) : 9999;
       const desiredZoom = game.dockedId ? 1.25 : targetDist < 300 ? 1.12 : clamp(0.92 - speed / 700, 0.3, 0.95);
-      const title = screen === "title" ? titleLayout(width, height, stationPose(TITLE_STATION, game.elapsed)) : null;
+      const title = screen === "title" ? titleLayout(width, height, stationPose(system, TITLE_STATION, game.elapsed)) : null;
       if (title) {
         cam.zoom = lerp(cam.zoom, title.camera.zoom, 0.02);
         cam.x = lerp(cam.x, title.camera.x, 0.02);
@@ -1774,24 +1861,24 @@ export default function EmberlineGame() {
          is fixed in space; a station's is drawn wherever its planet is now. */
       context.strokeStyle = "rgba(125,144,137,.055)";
       context.lineWidth = 1 / cam.zoom;
-      BODIES.forEach((body) => {
-        const lane = bodyOrbitRadius(body);
+      system.bodies.forEach((body) => {
+        const lane = bodyOrbitRadius(system, body);
         if (!lane) return;
         context.beginPath();
         context.arc(0, 0, lane, 0, TAU);
         context.stroke();
       });
-      STATIONS.forEach((station) => {
-        const primary = BODIES.find((body) => body.id === station.orbit.around);
+      system.stations.forEach((station) => {
+        const primary = system.bodies.find((body) => body.id === station.orbit.around);
         if (!primary) return;
-        const at = bodyPose(primary, game.elapsed);
+        const at = bodyPose(system, primary, game.elapsed);
         context.beginPath();
-        context.arc(at.x, at.y, orbitRadius(station), 0, TAU);
+        context.arc(at.x, at.y, orbitRadius(system, station), 0, TAU);
         context.stroke();
       });
 
-      BODIES.forEach((body) => {
-        const at = bodyPose(body, game.elapsed);
+      system.bodies.forEach((body) => {
+        const at = bodyPose(system, body, game.elapsed);
         const deck = body.radius * (body.star ? CORONA_REACH : SURFACE_CONTACT);
         context.lineWidth = 1 / cam.zoom;
         context.strokeStyle = "rgba(125,144,137,.08)";
@@ -1810,31 +1897,35 @@ export default function EmberlineGame() {
         context.setLineDash([]);
       });
 
-      const cloudAt = wakePose(game.elapsed);
-      context.save();
-      context.translate(cloudAt.x, cloudAt.y);
-      const dust = context.createRadialGradient(0, 0, 10, 0, 0, SALVAGE_ZONE.radius);
-      dust.addColorStop(0, "rgba(123,105,74,.07)");
-      dust.addColorStop(0.6, "rgba(102,92,73,.035)");
-      dust.addColorStop(1, "rgba(0,0,0,0)");
-      context.fillStyle = dust;
-      context.beginPath(); context.arc(0, 0, SALVAGE_ZONE.radius, 0, TAU); context.fill();
-      context.strokeStyle = "rgba(175,137,79,.12)";
-      context.setLineDash([3, 13]);
-      context.beginPath(); context.arc(0, 0, SALVAGE_ZONE.radius * 0.72, 0, TAU); context.stroke();
-      context.setLineDash([]);
-      context.restore();
-      /* The specks that used to stand in for debris are gone: the field is
-         now real, simulated hazard chunks, drawn with the traffic below
-         once discovered (see game.debris.forEach further down). */
+      /* One dust field per salvage field, each in its own frame. The specks
+         that used to stand in for debris are gone: the field is now real,
+         simulated hazard chunks, drawn with the traffic below once
+         discovered (see game.debris.forEach further down). */
+      const fieldPoses = new Map(system.fields.map((field) => [field.id, fieldPose(system, field, game.elapsed)]));
+      system.fields.forEach((field) => {
+        const at = fieldPoses.get(field.id)!;
+        context.save();
+        context.translate(at.x, at.y);
+        const dust = context.createRadialGradient(0, 0, 10, 0, 0, field.radius);
+        dust.addColorStop(0, "rgba(123,105,74,.07)");
+        dust.addColorStop(0.6, "rgba(102,92,73,.035)");
+        dust.addColorStop(1, "rgba(0,0,0,0)");
+        context.fillStyle = dust;
+        context.beginPath(); context.arc(0, 0, field.radius, 0, TAU); context.fill();
+        context.strokeStyle = "rgba(175,137,79,.12)";
+        context.setLineDash([3, 13]);
+        context.beginPath(); context.arc(0, 0, field.radius * 0.72, 0, TAU); context.stroke();
+        context.setLineDash([]);
+        context.restore();
+      });
 
       /* Bodies sit behind the traffic and drift with parallax, not with the
          world. The star is painted the same way but by its own routine: it
          is the light source, so it has no lit side and no terminator. */
-      const star = BODIES.find((body) => body.star);
-      const starAt = star ? planetParallax(star, bodyPose(star, game.elapsed), cam) : { x: 0, y: 0 };
-      BODIES.forEach((body) => {
-        const at = planetParallax(body, bodyPose(body, game.elapsed), cam);
+      const star = system.bodies.find((body) => body.star);
+      const starAt = star ? planetParallax(star, bodyPose(system, star, game.elapsed), cam) : { x: 0, y: 0 };
+      system.bodies.forEach((body) => {
+        const at = planetParallax(body, bodyPose(system, body, game.elapsed), cam);
         context.save();
         context.translate(at.x, at.y);
         if (body.star) drawStar(context, body, { time: game.elapsed, zoom: cam.zoom });
@@ -1850,8 +1941,8 @@ export default function EmberlineGame() {
         context.setLineDash([]);
       }
 
-      STATIONS.forEach((station) => {
-        const pose = stationPose(station, game.elapsed);
+      system.stations.forEach((station) => {
+        const pose = stationPose(system, station, game.elapsed);
         drawStation(context, station, {
           time: game.elapsed,
           zoom: cam.zoom,
@@ -1866,8 +1957,10 @@ export default function EmberlineGame() {
          hits the ship (see resolveContacts) — it simply is not drawn yet. */
       game.debris.forEach((chunk) => {
         if (!chunk.discovered) return;
-        /* Chunk coordinates are offsets in the cloud's frame, so the whole
-           field is placed by translating to where the Wake is now. */
+        const cloudAt = fieldPoses.get(chunk.fieldId);
+        if (!cloudAt) return;
+        /* Chunk coordinates are offsets in its field's frame, so the whole
+           cloud is placed by translating to where that field is now. */
         const at = { x: cloudAt.x + chunk.x, y: cloudAt.y + chunk.y };
         context.save();
         context.translate(at.x, at.y);
@@ -1925,8 +2018,8 @@ export default function EmberlineGame() {
       if (cam.zoom > 0.42) {
         context.font = `${11 / cam.zoom}px ui-monospace, monospace`;
         context.textAlign = "center";
-        STATIONS.forEach((station) => {
-          const pose = stationPose(station, game.elapsed);
+        system.stations.forEach((station) => {
+          const pose = stationPose(system, station, game.elapsed);
           context.fillStyle = station.id === game.targetId ? "#f0c46b" : "rgba(226,221,204,.72)";
           context.fillText(`${station.callSign}  ${station.name.toUpperCase()}`, pose.x, pose.y + 76 / cam.zoom);
         });
@@ -1978,13 +2071,14 @@ export default function EmberlineGame() {
     return () => cancelAnimationFrame(frame);
   }, [audio, helpOpen, mapOpen, muted, notify, screen, undock]);
 
-  const docked = stationById(ui.dockedId);
-  const target = stationById(ui.targetId) ?? STATIONS[0];
-  const active = contractById(ui.activeContractId);
+  const system = activeSystem(ui.systemId);
+  const docked = stationById(system, ui.dockedId);
+  const target = stationById(system, ui.targetId) ?? system.stations[0];
+  const active = contractById(system, ui.activeContractId);
   const currentShip = shipById(ui.shipId);
   const fuelCapacity = currentShip.fuelCapacity * (ui.upgrades.includes("tank") ? 1.35 : 1);
   const cargoMass = ui.cargo.reduce((sum, item) => sum + CARGO[item.kind].mass, 0);
-  const contractsHere = useMemo(() => CONTRACTS.filter((contract) => contract.origin === ui.dockedId), [ui.dockedId]);
+  const contractsHere = useMemo(() => activeSystem(ui.systemId).contracts.filter((contract) => contract.origin === ui.dockedId), [ui.systemId, ui.dockedId]);
   const carriedFreight = ui.cargo.filter((item) => item.source === "contract");
   /** 1 before anything is clamped, so the manifest starts looking pristine rather than warned-about. */
   const carriedCondition = carriedFreight.length ? carriedFreight.reduce((sum, item) => sum + item.condition, 0) / carriedFreight.length : 1;
@@ -2049,10 +2143,10 @@ export default function EmberlineGame() {
                     )}
                   </div>
                 </div>
-                <div className="route-line"><span>{stationById(active.origin)?.callSign}</span><i /><span>{stationById(active.destination)?.callSign}</span></div>
+                <div className="route-line"><span>{stationById(system, active.origin)?.callSign}</span><i /><span>{stationById(system, active.destination)?.callSign}</span></div>
                 <div className="objective">
                   <small>NEXT ACTION</small>
-                  <strong>{ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(active.destination)?.name}`}</strong>
+                  <strong>{ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(system, active.destination)?.name}`}</strong>
                 </div>
                 {active.timeLimit && (
                   <>
@@ -2114,7 +2208,7 @@ export default function EmberlineGame() {
                             <div><h3>{contract.title}</h3><p>{contract.description}</p></div>
                             <CargoPortrait kind={contract.cargo} count={contract.quantity} />
                           </div>
-                          <div className="manifest"><span>{cargo.short} × {contract.quantity}</span><span>{cargo.mass * contract.quantity} t</span><span>{stationById(contract.origin)?.callSign} → {stationById(contract.destination)?.callSign}</span>{contract.timeLimit && <span>{seconds(contract.timeLimit)} bonus window</span>}</div>
+                          <div className="manifest"><span>{cargo.short} × {contract.quantity}</span><span>{cargo.mass * contract.quantity} t</span><span>{stationById(system, contract.origin)?.callSign} → {stationById(system, contract.destination)?.callSign}</span>{contract.timeLimit && <span>{seconds(contract.timeLimit)} bonus window</span>}</div>
                           <div className="tear" aria-hidden="true" />
                           {withheld ? <small className="requirement">Withheld while the account is overdrawn</small> : locked ? <small className="requirement">Requires rep {contract.minReputation}{contract.requiredShip ? ` · ${shipById(contract.requiredShip).name}` : ""}{contract.kind === "cryogenic" ? " · Cryo umbilical" : ""}{(contract.minSlots ?? contract.quantity) > currentShip.slots + (ui.upgrades.includes("clamps") ? 1 : 0) ? ` · ${contract.minSlots ?? contract.quantity} clamps` : ""}</small> : <button disabled={Boolean(ui.activeContractId)} onClick={() => stageContract(contract)}>Accept manifest</button>}
                         </article>
@@ -2171,13 +2265,8 @@ export default function EmberlineGame() {
       {mapOpen && (
         <section className="modal map-modal plate" role="dialog" aria-modal="true" aria-labelledby="map-title">
           <button className="modal-close" onClick={() => setMapOpen(false)}>Close <kbd>ESC</kbd></button>
-          <div className="map-copy"><p className="eyebrow">COMPRESSED NAVIGATION CHART / NOT TO SCALE</p><h2 id="map-title">The Cinder system</h2><p>Three worlds around one star, and everything here is moving: ports around their world, worlds around Cinder, the inner lane fastest. The chart is schematic — what matters is that the run between two worlds lengthens and shortens as they pass, so a lane that is cheap this shift may be twice the distance the next.</p></div>
-          <div className="system-map">
-            <div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="orbit orbit-three" />
-            {BODIES.map((body) => <div className={`map-body ${body.id}`} key={body.id}><PlanetPortrait body={body} /><span>{body.name.toUpperCase()}<small>{body.kind}</small></span></div>)}
-            <div className="wake-zone"><i />THE WAKE</div>
-            {STATIONS.map((station) => <button key={station.id} className={`map-station station-${station.id} ${station.id === ui.targetId ? "active" : ""}`} onClick={() => setTarget(station.id)}><i /><b>{station.callSign}</b><span>{station.name}</span></button>)}
-          </div>
+          <div className="map-copy"><p className="eyebrow">COMPRESSED NAVIGATION CHART / NOT TO SCALE</p><h2 id="map-title">{system.name}</h2><p>Three worlds around one star, and everything here is moving: ports around their world, worlds around Cinder, the inner lane fastest. The chart is schematic — what matters is that the run between two worlds lengthens and shortens as they pass, so a lane that is cheap this shift may be twice the distance the next.</p></div>
+          <SystemChart system={system} time={ui.elapsed} targetId={ui.targetId} onSelect={setTarget} />
           <div className="map-legend"><span><i className="legend-port" /> SELECT A PORT TO SET BEACON</span><span><i className="legend-wake" /> SALVAGE REGION</span><span>Current range to {target.callSign}: {Math.round(ui.distance)} km</span></div>
         </section>
       )}
