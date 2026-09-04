@@ -64,6 +64,32 @@ approach, teal when a dock is possible. Ships dock, undock and stage cargo
 relative to the berth, so the pad always tells the truth. Drawings live in
 `app/game/art/stations.ts`.
 
+## Planets
+
+Planets are background. They never collide with the ship, and they are drawn
+with a little parallax (they move slower than the foreground and sit slightly
+smaller than their true radius) so the working layer reads as closer. Gravity
+still lives at the true position, marked by the guide ring.
+
+One light source at upper right. Every body gets a globe gradient, a soft
+terminator, limb darkening, and a lit limb. Rayleigh has six belts, two storms,
+city lights on its night side, and elevator threads. Nernst has fracture lines
+and craters with lit rims. Roche is an irregular polygon with dark craters and a
+line of blinking navigation lamps. Drawings live in `app/game/art/planets.ts`.
+
+**Naming.** The star is Cinder. Worlds are named for physicists whose work fits
+the body, kept a little obscure: Rayleigh (scattering, the amber sky), Nernst
+(the cold limit), Roche (the tidal limit, a captured body). New bodies follow the
+same rule: a surname, one word, tied to what the place is.
+
+## Station character
+
+Every station shares the common body and berth, then carries one module that
+says what it does: Pilgrim's market ring and hab pods, Sinter's glowing kiln
+stacks, Anvil's construction cradle with a hull under way, Deepwell's winch and
+ore cages, Bluehour's cryo spheres and propellant drum, Quiet Arc's dishes and
+listening boom. Character is one module, not a different vocabulary.
+
 ## Trucking cues
 
 Amber marker lights, red tail lights, hazard chevrons on the bumper, a stripe on
@@ -101,6 +127,7 @@ nothing else. Warm colours belong to structure and light.
 2. Cargo containers — done.
 3. Stations and berths — done.
 4. Title composition to match the key art — done.
-5. Mule, Atlas, Mastiff on the same vocabulary.
-6. Planets: fewer stripe ellipses, a real terminator, city lights on Cinder.
-7. The Wake: debris built from the same parts vocabulary.
+5. Planets, naming, parallax — done.
+6. Station character modules — done.
+7. Mule, Atlas, Mastiff on the same vocabulary.
+8. The Wake: debris built from the same parts vocabulary.
