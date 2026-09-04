@@ -14,6 +14,7 @@ import {
 import type { CargoKind, ContractDefinition, ShipDefinition, Station } from "./types";
 import { drawCargoUnit } from "./art/cargo";
 import { drawShipPortrait, shipArtFor } from "./art/ships";
+import { berthPoint, drawStation } from "./art/stations";
 
 const TAU = Math.PI * 2;
 const SAVE_KEY = "emberline-save-v1";
@@ -45,6 +46,20 @@ type Particle = {
   maxLife: number;
   size: number;
   color: string;
+};
+
+/** A ship drawn at an arbitrary pose: used by the flight view and by the title composition. */
+type ShipPose = {
+  x: number;
+  y: number;
+  angle: number;
+  shipId: ShipDefinition["id"];
+  cargo: CargoItem[];
+  upgrades: string[];
+  thrusting: boolean;
+  showLabel: boolean;
+  /** Extra multiplier on the art's own world scale. 1 = flight scale. */
+  scale?: number;
 };
 
 type GameMutable = {
@@ -113,10 +128,61 @@ const contractById = (id: string | null) => CONTRACTS.find((contract) => contrac
 const money = (value: number) => `₡${Math.max(0, Math.round(value)).toLocaleString("en-US")}`;
 const seconds = (value: number) => `${Math.max(0, Math.floor(value / 60))}:${String(Math.max(0, Math.floor(value % 60))).padStart(2, "0")}`;
 
+/* ------------------------------------------------------------------ */
+/* Title composition                                                    */
+/*                                                                      */
+/* The opening frame is posed by hand, not by the simulation: a loaded   */
+/* Kestrel low left, engine lit, nose on Pilgrim Exchange, with Cinder   */
+/* filling the right edge. See SPEC / ART_DIRECTION.md.                  */
+/* ------------------------------------------------------------------ */
+const TITLE_STATION = STATIONS[0];
+const TITLE_CARGO: CargoItem[] = [
+  { id: "title-water", kind: "water", condition: 1, source: "contract", value: 0 },
+  { id: "title-metals", kind: "metals", condition: 1, source: "contract", value: 0 },
+];
+/** Screen fractions the composition places things at, per breakpoint. */
+const TITLE_VIEW = {
+  wide: { zoom: 0.78, station: { x: 0.55, y: 0.55 }, ship: { x: 0.27, y: 0.76 }, shipScale: 2.4 },
+  narrow: { zoom: 0.5, station: { x: 0.56, y: 0.6 }, ship: { x: 0.5, y: 0.8 }, shipScale: 1.8 },
+};
+
+/** Camera that lands Pilgrim on its mark, plus the world point the truck flies at. */
+function titleLayout(width: number, height: number) {
+  const view = width < 760 ? TITLE_VIEW.narrow : TITLE_VIEW.wide;
+  const zoom = view.zoom;
+  const camera = {
+    zoom,
+    x: TITLE_STATION.position.x - (view.station.x * width - width / 2) / zoom,
+    y: TITLE_STATION.position.y - (view.station.y * height - height / 2) / zoom,
+  };
+  const anchor = {
+    x: camera.x + (view.ship.x * width - width / 2) / zoom,
+    y: camera.y + (view.ship.y * height - height / 2) / zoom,
+  };
+  return { camera, anchor, shipScale: view.shipScale };
+}
+
+/** Bob and sway around the anchor; nose held on Pilgrim. */
+function titleShipPose(anchor: { x: number; y: number }, scale: number, time: number): ShipPose {
+  const heading = Math.atan2(TITLE_STATION.position.y - anchor.y, TITLE_STATION.position.x - anchor.x);
+  return {
+    x: anchor.x + Math.sin(time * 0.9) * 3,
+    y: anchor.y + Math.cos(time * 0.7) * 2.5,
+    angle: heading + Math.sin(time * Math.PI) * 0.03,
+    shipId: "courier",
+    cargo: TITLE_CARGO,
+    upgrades: [],
+    thrusting: true,
+    showLabel: true,
+    scale,
+  };
+}
+
 function freshGame(): GameMutable {
   const start = STATIONS[0];
+  const berth = berthPoint(start, 100);
   return {
-    ship: { x: start.position.x - 96, y: start.position.y + 20, vx: 0, vy: 0, angle: 0, av: 0, fuel: SHIPS[0].fuelCapacity, hull: 100 },
+    ship: { x: berth.x, y: berth.y, vx: 0, vy: 0, angle: start.orientation, av: 0, fuel: SHIPS[0].fuelCapacity, hull: 100 },
     shipId: "courier",
     dockedId: start.id,
     targetId: STATIONS[1].id,
@@ -154,8 +220,10 @@ function safeLoad(): GameMutable | null {
     if (!stationById(game.dockedId) && game.dockedId) game.dockedId = "pilgrim";
     if (game.dockedId) {
       const station = stationById(game.dockedId) ?? STATIONS[0];
-      game.ship.x = station.position.x - 96;
-      game.ship.y = station.position.y + 20;
+      const berth = berthPoint(station, 100);
+      game.ship.x = berth.x;
+      game.ship.y = berth.y;
+      game.ship.angle = station.orientation;
       game.ship.vx = 0;
       game.ship.vy = 0;
     }
@@ -341,6 +409,7 @@ export default function EmberlineGame() {
   const actionRequestRef = useRef(false);
   const salvageSeededRef = useRef(false);
   const cameraRef = useRef({ x: -320, y: 30, zoom: 0.78 });
+  const titlePoseRef = useRef<ShipPose | null>(null);
   const starRef = useRef(Array.from({ length: 340 }, (_, index) => ({
     x: ((index * 1877) % 10000) / 10000,
     y: ((index * 3463 + 997) % 10000) / 10000,
@@ -397,16 +466,19 @@ export default function EmberlineGame() {
     game.activeContractId = contract.id;
     game.contractTime = contract.timeLimit ?? 0;
     game.targetId = contract.destination;
+    // clear of the lengthened berth: the same 24 units beyond the pad edge the staging always had
+    const staging = berthPoint(station, 182);
     game.pickups = Array.from({ length: contract.quantity }, (_, index) => {
       const spacing = (index - (contract.quantity - 1) / 2) * 52;
+      const across = 42 + spacing;
       return {
         id: `contract-${contract.id}-${index}`,
         kind: contract.cargo,
         condition: 1,
         source: "contract" as const,
         value: cargo.value,
-        x: station.position.x - 142,
-        y: station.position.y + 42 + spacing,
+        x: staging.x - Math.sin(station.orientation) * across,
+        y: staging.y + Math.cos(station.orientation) * across,
         vx: 0,
         vy: 0,
         spin: index % 2 ? -0.05 : 0.05,
@@ -423,11 +495,13 @@ export default function EmberlineGame() {
     const station = stationById(game.dockedId);
     if (!station) return;
     game.dockedId = null;
-    game.ship.x = station.position.x - 105;
-    game.ship.y = station.position.y;
-    game.ship.vx = -6;
-    game.ship.vy = 0;
-    game.ship.angle = Math.PI;
+    const clear = berthPoint(station, 105);
+    const heading = station.orientation + Math.PI;
+    game.ship.x = clear.x;
+    game.ship.y = clear.y;
+    game.ship.vx = Math.cos(heading) * 6;
+    game.ship.vy = Math.sin(heading) * 6;
+    game.ship.angle = heading;
     game.ship.av = 0;
     audio.tone("dock", muted);
     notify("Umbilicals clear. You have flight control.");
@@ -496,8 +570,9 @@ export default function EmberlineGame() {
     const game = gameRef.current;
     const cost = Math.min(900, Math.max(0, game.credits));
     const station = STATIONS[0];
+    const berth = berthPoint(station, 100);
     game.credits -= cost;
-    game.ship = { x: station.position.x - 96, y: station.position.y, vx: 0, vy: 0, angle: 0, av: 0, fuel: Math.max(20, shipById(game.shipId).fuelCapacity * 0.18), hull: Math.max(35, game.ship.hull) };
+    game.ship = { x: berth.x, y: berth.y, vx: 0, vy: 0, angle: station.orientation, av: 0, fuel: Math.max(20, shipById(game.shipId).fuelCapacity * 0.18), hull: Math.max(35, game.ship.hull) };
     game.dockedId = station.id;
     game.cargo = game.cargo.filter((item) => item.source === "salvage");
     game.pickups = [];
@@ -597,12 +672,13 @@ export default function EmberlineGame() {
 
     const dock = (game: GameMutable, station: Station) => {
       game.dockedId = station.id;
-      game.ship.x = station.position.x - 96;
-      game.ship.y = station.position.y;
+      const berth = berthPoint(station, 100);
+      game.ship.x = berth.x;
+      game.ship.y = berth.y;
       game.ship.vx = 0;
       game.ship.vy = 0;
       game.ship.av = 0;
-      game.ship.angle = 0;
+      game.ship.angle = station.orientation;
       game.shake = 4;
       audio.tone("dock", muted);
 
@@ -654,6 +730,33 @@ export default function EmberlineGame() {
       notify(note, 6);
     };
 
+    /* The truck in the title composition burns while the simulation is idle. */
+    const titleExhaust = (game: GameMutable, dt: number) => {
+      const pose = titlePoseRef.current;
+      if (!pose) return;
+      const art = shipArtFor(shipById(pose.shipId));
+      const scale = art.scale * (pose.scale ?? 1);
+      const behind = -art.exhaust * scale;
+      if (Math.random() < dt * 28) {
+        game.particles.push({
+          x: pose.x - Math.cos(pose.angle) * behind,
+          y: pose.y - Math.sin(pose.angle) * behind,
+          vx: -Math.cos(pose.angle) * (45 + Math.random() * 35) * (pose.scale ?? 1),
+          vy: -Math.sin(pose.angle) * (45 + Math.random() * 35) * (pose.scale ?? 1),
+          life: 0.7,
+          maxLife: 0.7,
+          size: (2 + Math.random() * 3) * (pose.scale ?? 1),
+          color: Math.random() > 0.4 ? "#e68449" : "#f6d27b",
+        });
+      }
+      game.particles.forEach((particle) => {
+        particle.x += particle.vx * dt;
+        particle.y += particle.vy * dt;
+        particle.life -= dt;
+      });
+      game.particles = game.particles.filter((particle) => particle.life > 0).slice(-160);
+    };
+
     const update = (game: GameMutable, dt: number) => {
       game.elapsed += dt;
       if (!salvageSeededRef.current) {
@@ -663,6 +766,7 @@ export default function EmberlineGame() {
       }
       if (screen !== "game" || game.paused || mapOpen || helpOpen) {
         audio.setEngine(0, muted);
+        if (screen === "title") titleExhaust(game, dt);
         return;
       }
 
@@ -818,7 +922,8 @@ export default function EmberlineGame() {
         game.cargo = [];
         game.pickups = [];
         game.activeContractId = null;
-        game.ship = { x: STATIONS[0].position.x - 96, y: STATIONS[0].position.y, vx: 0, vy: 0, angle: 0, av: 0, fuel: 24, hull: 52 };
+        const rescue = berthPoint(STATIONS[0], 100);
+        game.ship = { x: rescue.x, y: rescue.y, vx: 0, vy: 0, angle: STATIONS[0].orientation, av: 0, fuel: 24, hull: 52 };
         game.dockedId = "pilgrim";
         salvageSeededRef.current = false;
         notify("Pilgrim rescue recovered the hull. Insurance excess: ₡1,400.", 7);
@@ -853,17 +958,18 @@ export default function EmberlineGame() {
       drawCargoUnit(ctx, kind, { size, condition, time: gameRef.current.elapsed });
     };
 
-    const drawShip = (ctx: CanvasRenderingContext2D, game: GameMutable, zoom: number) => {
-      const ship = shipById(game.shipId);
+    /** Paints any ship at any pose: the flown vessel, or the truck in the title composition. */
+    const drawShip = (ctx: CanvasRenderingContext2D, pose: ShipPose, time: number) => {
+      const ship = shipById(pose.shipId);
       const art = shipArtFor(ship);
-      const thrusting = Boolean((keysRef.current.w || keysRef.current.arrowup) && game.ship.fuel > 0 && screen === "game");
       ctx.save();
-      ctx.translate(game.ship.x, game.ship.y);
-      ctx.rotate(game.ship.angle);
-      ctx.scale(art.scale, art.scale);
+      const scale = art.scale * (pose.scale ?? 1);
+      ctx.translate(pose.x, pose.y);
+      ctx.rotate(pose.angle);
+      ctx.scale(scale, scale);
 
       const paintCargo = () => {
-        game.cargo.forEach((item, index) => {
+        pose.cargo.forEach((item, index) => {
           const at = art.clamps[index] ?? art.clamps[art.clamps.length - 1];
           ctx.save();
           ctx.translate(at.x, at.y);
@@ -872,11 +978,11 @@ export default function EmberlineGame() {
         });
       };
       const paintClamps = () => {
-        const slots = ship.slots + (game.upgrades.includes("clamps") ? 1 : 0);
-        art.clamps.slice(0, slots).forEach((_, slot) => art.drawClamp?.(ctx, slot, slot < game.cargo.length));
+        const slots = ship.slots + (pose.upgrades.includes("clamps") ? 1 : 0);
+        art.clamps.slice(0, slots).forEach((_, slot) => art.drawClamp?.(ctx, slot, slot < pose.cargo.length));
       };
 
-      const state = { upgrades: game.upgrades, thrusting, showLabel: zoom > 0.75, time: game.elapsed };
+      const state = { upgrades: pose.upgrades, thrusting: pose.thrusting, showLabel: pose.showLabel, time };
       if (art.cargoLayer === "under") {
         paintClamps();
         paintCargo();
@@ -942,63 +1048,6 @@ export default function EmberlineGame() {
       ctx.restore();
     };
 
-    const drawStation = (ctx: CanvasRenderingContext2D, station: Station, time: number, target: boolean) => {
-      const s = station.size === "large" ? 1.22 : station.size === "small" ? 0.76 : 1;
-      ctx.save();
-      ctx.translate(station.position.x, station.position.y);
-      ctx.rotate(station.orientation);
-      ctx.scale(s, s);
-      if (target) {
-        ctx.strokeStyle = "rgba(224,175,84,.22)";
-        ctx.lineWidth = 1.4;
-        ctx.setLineDash([7, 8]);
-        ctx.beginPath(); ctx.arc(0, 0, 84 + Math.sin(time * 2) * 4, 0, TAU); ctx.stroke();
-        ctx.setLineDash([]);
-      }
-      ctx.strokeStyle = "#7c725f";
-      ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.moveTo(-62, 0); ctx.lineTo(58, 0); ctx.stroke();
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.moveTo(-58, -10); ctx.lineTo(55, 10); ctx.moveTo(-58, 10); ctx.lineTo(55, -10);
-      for (let x = -55; x <= 45; x += 20) { ctx.moveTo(x, -11); ctx.lineTo(x + 10, 11); }
-      ctx.stroke();
-      ctx.fillStyle = "#393a35";
-      ctx.fillRect(-24, -16, 48, 32);
-      ctx.strokeStyle = station.color;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(-24, -16, 48, 32);
-      ctx.fillStyle = "#171b1b";
-      ctx.fillRect(-17, -11, 34, 22);
-      ctx.fillStyle = station.color;
-      for (let i = -12; i <= 12; i += 8) ctx.fillRect(i, -7, 3, 2);
-      ctx.fillStyle = "#6e6b5f";
-      ctx.beginPath(); ctx.roundRect(-48, -25, 17, 50, 8); ctx.fill();
-      ctx.beginPath(); ctx.roundRect(33, -23, 15, 46, 7); ctx.fill();
-      ctx.strokeStyle = "#a59a7d";
-      ctx.stroke();
-      ctx.fillStyle = "#2c3130";
-      ctx.fillRect(-70, -30, 18, 60);
-      ctx.fillStyle = station.id === "bluehour" || station.id === "quiet" ? "#456b6a" : "#69442e";
-      for (let y = -27; y < 28; y += 7) ctx.fillRect(-68, y, 14, 3);
-      ctx.strokeStyle = "#96886c";
-      ctx.beginPath(); ctx.moveTo(24, 0); ctx.lineTo(67, -34); ctx.lineTo(72, -34); ctx.stroke();
-      ctx.beginPath(); ctx.arc(73, -35, 8, Math.PI * 0.1, Math.PI * 1.25); ctx.stroke();
-      ctx.fillStyle = station.color;
-      ctx.beginPath(); ctx.arc(-62, 0, 3 + Math.sin(time * 3) * 0.7, 0, TAU); ctx.fill();
-      ctx.fillStyle = "#ca493c";
-      ctx.beginPath(); ctx.arc(58, 0, 2.2, 0, TAU); ctx.fill();
-      if (station.size === "large") {
-        ctx.strokeStyle = "#5b5549";
-        ctx.lineWidth = 6;
-        ctx.beginPath(); ctx.arc(0, 0, 41, 0, TAU); ctx.stroke();
-        ctx.strokeStyle = station.color;
-        ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(0, 0, 46, 0, TAU); ctx.stroke();
-      }
-      ctx.restore();
-    };
-
     const draw = (game: GameMutable, dims: { width: number; height: number; dpr: number }) => {
       const { width, height, dpr } = dims;
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1015,10 +1064,17 @@ export default function EmberlineGame() {
       const target = stationById(game.targetId);
       const targetDist = target ? distance(game.ship, target.position) : 9999;
       const desiredZoom = game.dockedId ? 1.25 : targetDist < 260 ? 1.12 : clamp(0.88 - speed / 340, 0.48, 0.92);
-      cam.zoom = lerp(cam.zoom, screen === "title" ? 0.78 : desiredZoom, 0.025);
-      const lead = screen === "title" ? { x: -260, y: 60 } : { x: game.ship.vx * 1.15, y: game.ship.vy * 1.15 };
-      cam.x = lerp(cam.x, (screen === "title" ? -210 : game.ship.x) + lead.x, screen === "title" ? 0.01 : 0.055);
-      cam.y = lerp(cam.y, (screen === "title" ? 10 : game.ship.y) + lead.y, screen === "title" ? 0.01 : 0.055);
+      const title = screen === "title" ? titleLayout(width, height) : null;
+      if (title) {
+        cam.zoom = lerp(cam.zoom, title.camera.zoom, 0.02);
+        cam.x = lerp(cam.x, title.camera.x, 0.02);
+        cam.y = lerp(cam.y, title.camera.y, 0.02);
+        titlePoseRef.current = titleShipPose(title.anchor, title.shipScale, game.elapsed);
+      } else {
+        cam.zoom = lerp(cam.zoom, desiredZoom, 0.025);
+        cam.x = lerp(cam.x, game.ship.x + game.ship.vx * 1.15, 0.055);
+        cam.y = lerp(cam.y, game.ship.y + game.ship.vy * 1.15, 0.055);
+      }
       const shakeX = (Math.random() - 0.5) * game.shake;
       const shakeY = (Math.random() - 0.5) * game.shake;
 
@@ -1071,7 +1127,13 @@ export default function EmberlineGame() {
         context.setLineDash([]);
       }
 
-      STATIONS.forEach((station) => drawStation(context, station, game.elapsed, station.id === game.targetId));
+      STATIONS.forEach((station) => drawStation(context, station, {
+        time: game.elapsed,
+        zoom: cam.zoom,
+        target: station.id === game.targetId,
+        shipSpeed: speed,
+        shipDistance: distance(game.ship, station.position),
+      }));
       game.pickups.forEach((pickup) => {
         if (!pickup.discovered && pickup.source === "salvage") return;
         context.save();
@@ -1092,7 +1154,7 @@ export default function EmberlineGame() {
       });
       context.globalAlpha = 1;
 
-      if (!game.dockedId) {
+      if (!game.dockedId && !title) {
         context.strokeStyle = "rgba(115,198,187,.62)";
         context.lineWidth = 1.2 / cam.zoom;
         context.beginPath();
@@ -1102,7 +1164,17 @@ export default function EmberlineGame() {
         context.fillStyle = "rgba(115,198,187,.85)";
         context.beginPath(); context.arc(game.ship.x + game.ship.vx * 3.2, game.ship.y + game.ship.vy * 3.2, 2.5 / cam.zoom, 0, TAU); context.fill();
       }
-      drawShip(context, game, cam.zoom);
+      const shipPose: ShipPose = title && titlePoseRef.current ? titlePoseRef.current : {
+        x: game.ship.x,
+        y: game.ship.y,
+        angle: game.ship.angle,
+        shipId: game.shipId,
+        cargo: game.cargo,
+        upgrades: game.upgrades,
+        thrusting: Boolean((keysRef.current.w || keysRef.current.arrowup) && game.ship.fuel > 0 && screen === "game"),
+        showLabel: cam.zoom > 0.75,
+      };
+      drawShip(context, shipPose, game.elapsed);
 
       if (cam.zoom > 0.42) {
         context.font = `${11 / cam.zoom}px ui-monospace, monospace`;
