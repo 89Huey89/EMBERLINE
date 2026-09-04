@@ -1,4 +1,4 @@
-import type { CelestialBody, Vec2 } from "../types";
+import type { CelestialBody, PlanetSurface, Vec2 } from "../types";
 
 /**
  * Planet art lives here, separate from simulation code.
@@ -93,12 +93,38 @@ type PlanetPaint = {
   surfacePx: number;
 };
 
-const PAINT: Record<string, PlanetPaint> = {
-  cinder: { highlight: "#e3a068", dark: "#1a1210", shadow: "#0c0704", surfacePx: 1280 },
-  morrow: { highlight: "#e6efec", dark: "#0b1214", shadow: "#06111c", surfacePx: 768 },
-  brindle: { highlight: "#9c8670", dark: "#1a1412", shadow: "#070605", surfacePx: 512 },
+/**
+ * A palette per surface, not per world.
+ *
+ * Keyed by what a body declares itself to be, so a new world inherits a
+ * coherent look by choosing a surface and overrides only what it wants to
+ * differ. The three worlds in the Cinder system each override the whole set,
+ * which is why their colours are unchanged by this being generic.
+ */
+const SURFACE_PAINT: Record<PlanetSurface, PlanetPaint> = {
+  rocky: { highlight: "#c8b79c", dark: "#141210", shadow: "#060809", surfacePx: 768 },
+  ice: { highlight: "#dfeae8", dark: "#0b1214", shadow: "#06111c", surfacePx: 768 },
+  metallic: { highlight: "#9c8670", dark: "#1a1412", shadow: "#070605", surfacePx: 512 },
 };
-const DEFAULT_PAINT: PlanetPaint = { highlight: "#c8b79c", dark: "#141210", shadow: "#060809", surfacePx: 768 };
+
+/**
+ * A body's palette: its surface's, with its own overrides on top.
+ *
+ * Merged field by field rather than by spreading the override object. A
+ * `Partial` spread over a complete record widens every field to possibly
+ * undefined, which would push a null check onto every colour in the file.
+ */
+function resolvePaint(body: CelestialBody): PlanetPaint {
+  const base = SURFACE_PAINT[body.surface ?? "rocky"];
+  const over = body.paint;
+  if (!over) return base;
+  return {
+    highlight: over.highlight ?? base.highlight,
+    dark: over.dark ?? base.dark,
+    shadow: over.shadow ?? base.shadow,
+    surfacePx: over.surfacePx ?? base.surfacePx,
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /* Small helpers                                                        */
@@ -552,8 +578,9 @@ function surfaceFor(body: CelestialBody, radius: number, paint: PlanetPaint) {
   const scale = paint.surfacePx / (2 * radius * SURFACE_SPAN);
   ctx.translate(paint.surfacePx / 2, paint.surfacePx / 2);
   ctx.scale(scale, scale);
-  if (body.id === "brindle") paintRocheSurface(ctx, radius);
-  else if (body.id === "morrow") paintNernstSurface(ctx, radius);
+  const surface = body.surface ?? "rocky";
+  if (surface === "metallic") paintRocheSurface(ctx, radius);
+  else if (surface === "ice") paintNernstSurface(ctx, radius);
   else paintRayleighSurface(ctx, radius);
   surfaces.set(body.id, canvas);
   return canvas;
@@ -569,11 +596,11 @@ function surfaceFor(body: CelestialBody, radius: number, paint: PlanetPaint) {
 export function drawPlanet(ctx: CanvasRenderingContext2D, body: CelestialBody, state: PlanetArtState) {
   const { zoom } = state;
   const radius = body.radius * PLANET_SCALE;
-  const paint = PAINT[body.id] ?? DEFAULT_PAINT;
+  const paint = resolvePaint(body);
   const atmosphere = body.atmosphere;
   const airless = !atmosphere;
-  const roche = body.id === "brindle";
-  const outline = roche ? rocheOutline(radius) : null;
+  const irregular = body.irregular ?? false;
+  const outline = irregular ? rocheOutline(radius) : null;
 
   /** The body's silhouette: a disc, or Roche's irregular outline. */
   const shape = () => {
@@ -635,8 +662,11 @@ export function drawPlanet(ctx: CanvasRenderingContext2D, body: CelestialBody, s
     const span = radius * SURFACE_SPAN;
     ctx.drawImage(surface, -span, -span, span * 2, span * 2);
   }
-  if (body.id === "cinder") drawRayleighLights(ctx, radius, zoom);
-  if (roche) drawRocheLamps(ctx, radius, state);
+  if (body.settled) drawRayleighLights(ctx, radius, zoom);
+  /* Navigation lamps belong to a mined metallic body, not to a ragged
+     silhouette. The old single id check conflated the two; a world could
+     reasonably be one without the other. */
+  if ((body.surface ?? "rocky") === "metallic") drawRocheLamps(ctx, radius, state);
 
   /* sub-solar sheen */
   const sheen = ctx.createRadialGradient(lx, ly, 0, lx, ly, radius * 0.55);
@@ -681,7 +711,7 @@ export function drawPlanet(ctx: CanvasRenderingContext2D, body: CelestialBody, s
   ctx.restore();
 
   /* 6. the lit limb, and a hard edge on anything without air */
-  ctx.strokeStyle = tint(roche ? paint.highlight : (atmosphere ?? paint.highlight), 0.7);
+  ctx.strokeStyle = tint(irregular ? paint.highlight : (atmosphere ?? paint.highlight), 0.7);
   ctx.lineWidth = 2 / zoom;
   ctx.beginPath();
   if (outline) {
@@ -710,7 +740,7 @@ export function drawPlanet(ctx: CanvasRenderingContext2D, body: CelestialBody, s
   }
 
   /* elevators hang outside the disc, so they come after the limb */
-  if (body.id === "cinder") drawRayleighElevators(ctx, radius, zoom, state.time);
+  if (body.settled) drawRayleighElevators(ctx, radius, zoom, state.time);
 
   ctx.restore();
 }

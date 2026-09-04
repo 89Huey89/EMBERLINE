@@ -31,6 +31,20 @@ export type CargoDefinition = {
   shape: "crate" | "tank" | "ore" | "machine";
 };
 
+/** The surface painters a world can choose from. */
+export type PlanetSurface = "rocky" | "ice" | "metallic";
+
+/** Colours a world may override on top of its surface's palette. */
+export type PlanetPaintOverride = {
+  highlight?: string;
+  dark?: string;
+  shadow?: string;
+  surfacePx?: number;
+};
+
+/** The character module a port carries on its boom. */
+export type StationModule = "none" | "market" | "kiln" | "shipyard" | "mine" | "cryoworks" | "observatory";
+
 export type CelestialBody = {
   id: string;
   name: string;
@@ -47,6 +61,22 @@ export type CelestialBody = {
   orbit?: { around: string; period: number };
   /** Marks the system primary: it lights everything, and its edge is a corona rather than a surface. */
   star?: true;
+  /**
+   * Which surface painter renders this world, and what its silhouette does.
+   *
+   * These are declarations, not identities. The art used to pick a painter by
+   * matching the body's id, which meant a world in a new system silently
+   * rendered as Rayleigh with nothing to explain why. A world now says what
+   * it looks like and the art obeys, so a new system picks from the looks
+   * that exist rather than needing one written for it.
+   */
+  surface?: PlanetSurface;
+  /** A captured body rather than a sphere: ragged outline instead of a disc. */
+  irregular?: boolean;
+  /** Inhabited: settlement lights on the night side, and orbital elevators. */
+  settled?: boolean;
+  /** Per-body colour overrides, layered over the surface's own palette. */
+  paint?: PlanetPaintOverride;
   radius: number;
   gravity: number;
   color: string;
@@ -68,6 +98,10 @@ export type Station = {
   position: Vec2;
   /** The body it holds station around, and seconds for one lap. */
   orbit: { around: string; period: number };
+  /** Which character module the art draws on the boom. Declared, not inferred from the id. */
+  module?: StationModule;
+  /** A cold station: teal work lights rather than amber. */
+  cold?: boolean;
   color: string;
   orientation: number;
   size: "small" | "standard" | "large";
@@ -134,6 +168,15 @@ export type SalvageField = {
  * `orbit.around`, a contract's `origin`/`destination`, a pickup's
  * `anchor.frame` — so a second system is another entry in `SYSTEMS`
  * (see `data.ts`) and nothing else.
+ */
+/**
+ * A star system, and everything in it.
+ *
+ * Ids must be unique across ALL systems, not just within one. The art caches
+ * a body's painted surface by its id alone, so two systems that both called a
+ * world "star" would share one cached texture and one of them would be drawn
+ * wrong. Prefixing with the system, or simply naming things distinctly, both
+ * work.
  */
 export type StarSystem = {
   id: string;

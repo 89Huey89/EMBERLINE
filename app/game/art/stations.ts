@@ -308,10 +308,14 @@ function drawBody(ctx: CanvasRenderingContext2D, station: Station, time: number,
 }
 
 /* ------------------------------------------------------------------ */
-/* Per-station character modules — scaled with the body                 */
+/* Character modules — scaled with the body                             */
 /*                                                                      */
 /* Every station shares the boom, hub, radiators and array above; what  */
 /* makes one recognisable at a glance is the industry bolted onto it.   */
+/* A port declares which module it carries rather than the art matching */
+/* on its id, so these are a set to choose from and a port in a new     */
+/* system picks one instead of needing one written. A port that names   */
+/* none simply carries the common body.                                 */
 /* These are drawn after the common body and before the berth, so they  */
 /* never intrude on the arm or the pad (negative x around y = 0).       */
 /* ------------------------------------------------------------------ */
@@ -341,11 +345,11 @@ function jitter(seed: number) {
 }
 
 function drawCharacter(ctx: CanvasRenderingContext2D, station: Station, time: number, work: string) {
-  switch (station.id) {
+  switch (station.module ?? "none") {
     /* -------------------------------------------------------------- */
     /* PILGRIM — commerce & habitation: a market ring people live on.   */
     /* -------------------------------------------------------------- */
-    case "pilgrim": {
+    case "market": {
       ctx.strokeStyle = "#5b5549";
       ctx.lineWidth = 5;
       ctx.beginPath(); ctx.arc(0, 0, 34, 0, TAU); ctx.stroke();
@@ -377,7 +381,7 @@ function drawCharacter(ctx: CanvasRenderingContext2D, station: Station, time: nu
     /* -------------------------------------------------------------- */
     /* SINTER — ore refinery: kilns burning, slag out the far end.      */
     /* -------------------------------------------------------------- */
-    case "sinter": {
+    case "kiln": {
       ([[-20, -30], [-6, -34]] as const).forEach(([x, y], index) => {
         ctx.beginPath(); ctx.arc(x, y, 7, 0, TAU);
         outlined(ctx, "#4a4842", 1);
@@ -410,7 +414,7 @@ function drawCharacter(ctx: CanvasRenderingContext2D, station: Station, time: nu
     /* -------------------------------------------------------------- */
     /* ANVIL — shipyard: a hull in an open cradle, cranes over it.      */
     /* -------------------------------------------------------------- */
-    case "anvil": {
+    case "shipyard": {
       ctx.strokeStyle = PAINT.steelLight;
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.roundRect(-60, -70, 90, 36, 3); ctx.stroke();
@@ -449,7 +453,7 @@ function drawCharacter(ctx: CanvasRenderingContext2D, station: Station, time: nu
     /* -------------------------------------------------------------- */
     /* DEEPWELL — mining concern: cages on a winch, ore stacked up.     */
     /* -------------------------------------------------------------- */
-    case "deepwell": {
+    case "mine": {
       // floodlight washing the shaft, drawn first so the hardware sits in it
       ctx.fillStyle = "rgba(242,181,68,.06)";
       ctx.beginPath();
@@ -490,7 +494,7 @@ function drawCharacter(ctx: CanvasRenderingContext2D, station: Station, time: nu
     /* -------------------------------------------------------------- */
     /* BLUEHOUR — ice processing: frosted spheres, cold plumbing.       */
     /* -------------------------------------------------------------- */
-    case "bluehour": {
+    case "cryoworks": {
       for (const [x, y] of [[-60, -40], [-42, -46], [-24, -40]] as const) {
         ctx.beginPath(); ctx.arc(x, y, 8, 0, TAU);
         outlined(ctx, "#cfd9d5", 1);
@@ -541,7 +545,7 @@ function drawCharacter(ctx: CanvasRenderingContext2D, station: Station, time: nu
     /* -------------------------------------------------------------- */
     /* QUIET — research platform: dishes, a long boom, keep-clear ring. */
     /* -------------------------------------------------------------- */
-    case "quiet": {
+    case "observatory": {
       ctx.strokeStyle = "rgba(231,223,205,.8)";
       ctx.lineWidth = 1.2;
       for (const [x, y, r] of [[-30, -40, 9], [40, -44, 7], [30, 44, 7]] as const) {
@@ -640,7 +644,7 @@ function drawBerth(ctx: CanvasRenderingContext2D, scale: number, time: number, w
 export function drawStation(ctx: CanvasRenderingContext2D, station: Station, state: StationArtState) {
   const { time, zoom, target, closingSpeed, shipDistance, at } = state;
   const scale = stationScale(station);
-  const cold = station.id === "bluehour" || station.id === "quiet";
+  const cold = station.cold ?? false;
   const work = cold ? PAINT.teal : PAINT.marker;
 
   ctx.save();
