@@ -13,6 +13,7 @@ import {
 } from "./data";
 import type { CargoKind, CelestialBody, ContractDefinition, ShipDefinition, Station } from "./types";
 import { drawCargoUnit } from "./art/cargo";
+import { drawDebrisChunk } from "./art/debris";
 import { ATMOSPHERE_TOP, drawPlanet, planetParallax, PLANET_SCALE, SURFACE_CONTACT } from "./art/planets";
 import { drawShipPortrait, shipArtFor } from "./art/ships";
 import { BERTH_CAPTURE, berthPoint, drawStation, stationColliders } from "./art/stations";
@@ -163,6 +164,59 @@ const DEADLINE_WARNING_WINDOW = 20;
 /** What expired contract freight is worth once downgraded to ordinary salvage. */
 const EXPIRED_SALVAGE_VALUE_FRACTION = 0.5;
 
+/* ------------------------------------------------------------------ */
+/* The Wake                                                             */
+/*                                                                      */
+/* The zone is scenery until a ship is inside it, then it is the         */
+/* sharpest risk/reward call in the game. The field is real, simulated   */
+/* debris, added to `resolveContacts`' own solids list — never a second  */
+/* damage model — so a hit is charged by the SAME closing-speed rule as  */
+/* a station or a planet. A chunk's size changes nothing about how hard  */
+/* it hits: it changes the contact radius, so a large chunk is simply    */
+/* harder to miss than a small one. Sight follows the pickups' own rule  */
+/* (215 units, 520 with a scanner) so a blind run is reckless by         */
+/* construction, not by a special case. Debris is never saved; like      */
+/* pickups and particles it re-seeds deterministically at the same       */
+/* moment salvage does, keyed off the same index arithmetic the rest of  */
+/* the seed data uses rather than Math.random, so the field is identical */
+/* every session while still being cheap to simulate.                    */
+/* ------------------------------------------------------------------ */
+
+/** Hazard chunks seeded in the field. */
+const DEBRIS_COUNT = 34;
+/** Smallest chunk, world units: easy to graze, a scare more than a hit. */
+const DEBRIS_MIN_RADIUS = 5;
+/** Largest chunk: bigger than any hull radius, so it is never a graze. */
+const DEBRIS_MAX_RADIUS = 30;
+/**
+ * Drift speed range, one axis. The Wake is a SLOW cloud — the zone's own
+ * description says so — so debris is not what closes fast on a ship; a
+ * ship's own speed through the field is. Keeping drift low keeps that
+ * true, and keeps the boundary bounce (see `updateDebrisField`) gentle.
+ */
+const DEBRIS_MAX_DRIFT = 14;
+/** How far inside SALVAGE_ZONE's ring a chunk's own edge must stay. */
+const DEBRIS_EDGE_MARGIN = 0.4;
+/**
+ * Range from the zone centre inside which debris is simulated at all —
+ * moved, bounced, checked for contact and for discovery. Outside it the
+ * per-frame cost of the whole field is one distance check. Set outside
+ * SALVAGE_ZONE's own radius so the field is already live by the time a
+ * ship reaches the dust ring drawn around it.
+ */
+const DEBRIS_ACTIVE_RANGE = SALVAGE_ZONE.radius + 260;
+/** id of the one rare recoverable seeded deep in the field. */
+const WAKE_PRIZE_ID = "salvage-wake-core";
+/**
+ * What the listening core is worth intact, before condition. Contracts in
+ * this system pay ₡1,550-7,200; this alone lands above every "standard" or
+ * "express" job and below only the two hardest heavy/cryogenic contracts —
+ * a single find worth a good contract's pay, in a system that can now cost
+ * you hull to reach. See the constants above: SCUFF_SPEED is what a careful
+ * approach costs (nothing), SHED_SPEED is what a careless one risks.
+ */
+const WAKE_PRIZE_VALUE = 6200;
+
 type CargoItem = {
   id: string;
   kind: CargoKind;
@@ -200,6 +254,21 @@ type Particle = {
   color: string;
 };
 
+/** One chunk of the Wake's hazard field: solid, unpowered, un-grabbable. */
+type Debris = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  spin: number;
+  /** Collision radius, and the size `drawDebrisChunk` draws it at. */
+  r: number;
+  /** Silhouette select for `drawDebrisChunk`: 0 shard, 1 spar, 2 drum. */
+  variant: number;
+  discovered: boolean;
+};
+
 /** A ship drawn at an arbitrary pose: used by the flight view and by the title composition. */
 type ShipPose = {
   x: number;
@@ -226,6 +295,7 @@ type GameMutable = {
   cargo: CargoItem[];
   pickups: Pickup[];
   particles: Particle[];
+  debris: Debris[];
   credits: number;
   reputation: number;
   ownedShips: ShipDefinition["id"][];
@@ -357,6 +427,7 @@ function freshGame(): GameMutable {
     cargo: [],
     pickups: [],
     particles: [],
+    debris: [],
     credits: 2800,
     reputation: 0,
     ownedShips: ["courier"],
@@ -381,7 +452,7 @@ function safeLoad(): GameMutable | null {
     if (!raw) return null;
     const saved = JSON.parse(raw) as Partial<GameMutable>;
     const base = freshGame();
-    const game = { ...base, ...saved, ship: { ...base.ship, ...saved.ship }, particles: [] as Particle[], pickups: [] as Pickup[] };
+    const game = { ...base, ...saved, ship: { ...base.ship, ...saved.ship }, particles: [] as Particle[], pickups: [] as Pickup[], debris: [] as Debris[] };
     if (!SHIPS.some((ship) => ship.id === game.shipId)) return null;
     if (!stationById(game.dockedId) && game.dockedId) game.dockedId = "pilgrim";
     if (game.dockedId) {
@@ -484,13 +555,14 @@ function snapshot(game: GameMutable): UiSnapshot {
 }
 
 function saveGame(game: GameMutable) {
-  const serializable = { ...game, particles: [], pickups: [] };
+  // Debris re-seeds deterministically alongside salvage (see update()), same as pickups and particles.
+  const serializable = { ...game, particles: [], pickups: [], debris: [] };
   localStorage.setItem(SAVE_KEY, JSON.stringify(serializable));
 }
 
 function makeSalvage(): Pickup[] {
   const kinds: CargoKind[] = ["components", "electronics", "ore", "science", "machinery", "metals"];
-  return kinds.map((kind, index) => {
+  const common: Pickup[] = kinds.map((kind, index) => {
     const angle = index * 2.17 + 0.4;
     const radius = 140 + (index * 97) % 430;
     return {
@@ -505,6 +577,61 @@ function makeSalvage(): Pickup[] {
       vy: Math.sin(angle + Math.PI / 2) * (3 + index),
       spin: (index % 2 ? -1 : 1) * (0.08 + index * 0.015),
       angle,
+      discovered: false,
+    };
+  });
+  /*
+   * The Wake's own description promises "one persistent unknown return":
+   * a single rare recoverable, seeded close to the zone centre rather than
+   * spread across it like the common salvage above, so reaching it means
+   * crossing the densest part of the debris field (see makeDebris) instead
+   * of skimming the rim. It is otherwise an ordinary salvage pickup — same
+   * clamp range, same scanner-gated discovery, same recovered: bookkeeping
+   * — so the fiction stays a salvage operator's rare find, not a treasure
+   * chest with its own rules.
+   */
+  const prize: Pickup = {
+    id: WAKE_PRIZE_ID,
+    kind: "science",
+    condition: 0.94,
+    source: "salvage",
+    value: WAKE_PRIZE_VALUE,
+    x: SALVAGE_ZONE.center.x + Math.cos(0.83) * SALVAGE_ZONE.radius * 0.16,
+    y: SALVAGE_ZONE.center.y + Math.sin(0.83) * SALVAGE_ZONE.radius * 0.16,
+    vx: 2.6,
+    vy: -1.7,
+    spin: 0.05,
+    angle: 0.83,
+    discovered: false,
+  };
+  return [...common, prize];
+}
+
+/**
+ * The Wake's hazard field: real objects with position, velocity and spin,
+ * seeded the same way the common salvage above is — index arithmetic, never
+ * Math.random, so a fresh session and a loaded one scatter identically.
+ * Radius is sampled uniformly in r rather than in area, which (unlike a
+ * true uniform disc, which would use sqrt) naturally packs more chunks per
+ * unit area near the centre than at the rim: the field gets thicker on the
+ * way to the prize `makeSalvage` seeds deep inside it, not thinner.
+ * `updateDebrisField` keeps every chunk drifting and bounces it off
+ * SALVAGE_ZONE's boundary, so the cloud never disperses over a session.
+ */
+function makeDebris(): Debris[] {
+  return Array.from({ length: DEBRIS_COUNT }, (_, index) => {
+    const angle = index * 2.399 + 1.1;
+    const radius = (index * 71 + 30) % (SALVAGE_ZONE.radius - 40);
+    const drift = index * 1.777 + 0.5;
+    return {
+      x: SALVAGE_ZONE.center.x + Math.cos(angle) * radius,
+      y: SALVAGE_ZONE.center.y + Math.sin(angle) * radius,
+      vx: Math.cos(drift) * (2 + (index * 7) % DEBRIS_MAX_DRIFT),
+      vy: Math.sin(drift) * (2 + (index * 11) % DEBRIS_MAX_DRIFT),
+      angle: index * 0.83,
+      spin: (index % 2 ? -1 : 1) * (0.15 + (index % 5) * 0.11),
+      r: DEBRIS_MIN_RADIUS + (index * 53) % (DEBRIS_MAX_RADIUS - DEBRIS_MIN_RADIUS + 1),
+      variant: index % 3,
       discovered: false,
     };
   });
@@ -895,7 +1022,9 @@ export default function EmberlineGame() {
         game.shake = 5;
         audio.tone("clamp", muted);
         if (nearest.pickup.source === "salvage") {
-          notify(`${CARGO[nearest.pickup.kind].name} secured. Deliver it to any port for assessment.`);
+          notify(nearest.pickup.id === WAKE_PRIZE_ID
+            ? "Whatever it is, it's still faintly warm. Deliver it to any port and let someone with the right instruments tell you what you found."
+            : `${CARGO[nearest.pickup.kind].name} secured. Deliver it to any port for assessment.`);
         } else {
           const active = contractById(game.activeContractId);
           const loaded = game.cargo.filter((item) => item.source === "contract").length;
@@ -1142,6 +1271,15 @@ export default function EmberlineGame() {
           what: `Surface contact on ${body.name}`,
         });
       }
+      /* The Wake's hazard field only joins the list this close to it, so a
+         ship anywhere else in the system pays nothing for 30-plus circles
+         it could never reach. Reuses this same loop and applyImpact below —
+         a debris hit is a contact like any other, not a second damage rule. */
+      if (distance(game.ship, SALVAGE_ZONE.center) < DEBRIS_ACTIVE_RANGE) {
+        for (const chunk of game.debris) {
+          solids.push({ x: chunk.x, y: chunk.y, r: chunk.r, vx: chunk.vx, vy: chunk.vy, what: "Debris strike in the Wake" });
+        }
+      }
 
       for (const solid of solids) {
         const dx = game.ship.x - solid.x;
@@ -1210,6 +1348,42 @@ export default function EmberlineGame() {
       }
     };
 
+    /**
+     * Drifts the Wake's hazard field and keeps it inside SALVAGE_ZONE: a
+     * chunk that reaches the boundary bounces off it rather than escaping,
+     * so the cloud never disperses over a session. Gated the same way
+     * `resolveContacts` gates debris contact, and for the same reason — a
+     * ship elsewhere in the system does not pay to simulate 30-plus objects
+     * it cannot see or reach. Discovery follows the pickups' own rule (215
+     * units, 520 with the scanner upgrade), so an unlit chunk is invisible
+     * right up until it is either close or scanned — not before.
+     */
+    const updateDebrisField = (game: GameMutable, dt: number) => {
+      if (distance(game.ship, SALVAGE_ZONE.center) >= DEBRIS_ACTIVE_RANGE) return;
+      const scanRange = game.upgrades.includes("scanner") ? 520 : 215;
+      game.debris.forEach((chunk) => {
+        chunk.x += chunk.vx * dt;
+        chunk.y += chunk.vy * dt;
+        chunk.angle += chunk.spin * dt;
+        const dx = chunk.x - SALVAGE_ZONE.center.x;
+        const dy = chunk.y - SALVAGE_ZONE.center.y;
+        const dist = Math.hypot(dx, dy);
+        const limit = SALVAGE_ZONE.radius - chunk.r * DEBRIS_EDGE_MARGIN;
+        if (dist > limit && dist > 0.001) {
+          const nx = dx / dist;
+          const ny = dy / dist;
+          chunk.x = SALVAGE_ZONE.center.x + nx * limit;
+          chunk.y = SALVAGE_ZONE.center.y + ny * limit;
+          const into = chunk.vx * nx + chunk.vy * ny;
+          if (into > 0) {
+            chunk.vx -= 2 * into * nx;
+            chunk.vy -= 2 * into * ny;
+          }
+        }
+        if (distance(game.ship, chunk) < scanRange) chunk.discovered = true;
+      });
+    };
+
     /* The truck in the title composition burns while the simulation is idle. */
     const titleExhaust = (game: GameMutable, dt: number) => {
       const pose = titlePoseRef.current;
@@ -1242,6 +1416,8 @@ export default function EmberlineGame() {
       if (!salvageSeededRef.current) {
         const recovered = new Set(game.discovered.filter((id) => id.startsWith("recovered:" )).map((id) => id.slice(10)));
         game.pickups.push(...makeSalvage().filter((pickup) => !recovered.has(pickup.id)));
+        // Debris carries no recovered state of its own — it is scenery to dodge, not cargo to keep — so it always re-seeds in full.
+        game.debris = makeDebris();
         salvageSeededRef.current = true;
       }
       if (screen !== "game" || game.paused || mapOpen || helpOpen) {
@@ -1381,6 +1557,7 @@ export default function EmberlineGame() {
         game.ship.vx += (-game.ship.x / WORLD.width) * 6 * dt;
         game.ship.vy += (-game.ship.y / WORLD.height) * 6 * dt;
       }
+      updateDebrisField(game, dt);
       resolveContacts(game, HULL_RADIUS[shipDef.size]);
 
       game.pickups.forEach((pickup) => {
@@ -1596,13 +1773,10 @@ export default function EmberlineGame() {
       context.setLineDash([3, 13]);
       context.beginPath(); context.arc(0, 0, SALVAGE_ZONE.radius * 0.72, 0, TAU); context.stroke();
       context.setLineDash([]);
-      for (let i = 0; i < 24; i += 1) {
-        const angle = i * 2.41;
-        const radius = 70 + (i * 119) % 520;
-        context.fillStyle = i % 3 ? "#3f403a" : "#7b6547";
-        context.fillRect(Math.cos(angle) * radius, Math.sin(angle) * radius, 2 + (i % 4), 1 + (i % 3));
-      }
       context.restore();
+      /* The specks that used to stand in for debris are gone: the field is
+         now real, simulated hazard chunks, drawn with the traffic below
+         once discovered (see game.debris.forEach further down). */
 
       /* Planets sit behind the traffic and drift with parallax, not with the world. */
       BODIES.forEach((body) => {
@@ -1631,6 +1805,22 @@ export default function EmberlineGame() {
           shipDistance: distance(game.ship, pose),
           at: pose,
         });
+      });
+      /* Debris draws under the pickups so a grabbable find stays the readable
+         thing on screen where the two overlap. An undiscovered chunk still
+         hits the ship (see resolveContacts) — it simply is not drawn yet. */
+      game.debris.forEach((chunk) => {
+        if (!chunk.discovered) return;
+        context.save();
+        context.translate(chunk.x, chunk.y);
+        context.rotate(chunk.angle);
+        drawDebrisChunk(context, { r: chunk.r, variant: chunk.variant });
+        if (distance(game.ship, chunk) < chunk.r + 130) {
+          context.strokeStyle = "rgba(214,86,58,.55)";
+          context.lineWidth = 1 / cam.zoom;
+          context.beginPath(); context.arc(0, 0, chunk.r + 10 + Math.sin(game.elapsed * 3) * 2, 0, TAU); context.stroke();
+        }
+        context.restore();
       });
       game.pickups.forEach((pickup) => {
         if (!pickup.discovered && pickup.source === "salvage") return;
@@ -1944,7 +2134,7 @@ export default function EmberlineGame() {
             <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward. <kbd>A</kbd>/<kbd>D</kbd> rotate. <kbd>Q</kbd>/<kbd>E</kbd> strafe. The teal line is your true velocity. Burn, coast, flip, brake — a loaded round trip costs most of a tank, so the coast is free and the burn is not. Aim where the beacon is going, not where it sits.</p></article>
             <article><span>04</span><h3>Make a clean arrival</h3><p>Ports orbit, so an arrival is a rendezvous. <b>CLOSING</b> on the panel is your speed relative to the pad, and it has to be under 36 m/s to clamp — matching a port’s motion matters more than stopping. Structure is solid: contact above 18 m/s costs hull, above 55 m/s it tears a container off the spine.</p></article>
             <article><span>05</span><h3>Respect the deck</h3><p>The red ring is a planet’s surface and it is solid. The dashed ring above it is atmosphere: drag and heat, survivable briefly, useful for shedding speed. Loaded, you cannot climb straight out of a deep well.</p></article>
-            <article><span>06</span><h3>Work The Wake</h3><p>Unmarked debris lies northeast of Rayleigh. Fit a better scanner, recover useful objects, and deliver salvage to any port.</p></article>
+            <article><span>06</span><h3>Work The Wake</h3><p>A slow debris field sits northeast of Rayleigh, and it is solid — the same closing-speed rule that governs a station or a planet governs it. A scanner shows it from 520 units out instead of 215; without one, flying in fast is a gamble. Salvage pays well, and something worth more sits deep in the field.</p></article>
           </div>
           <button className="primary-button" onClick={() => setHelpOpen(false)}>Return to the flight deck <span>→</span></button>
         </section>
