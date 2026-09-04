@@ -776,6 +776,7 @@ export default function EmberlineGame() {
         game.ship.vx = 0;
         game.ship.vy = 0;
         game.ship.av = 0;
+        game.shake *= Math.max(0, 1 - dt * 7);
         if (actionRequestRef.current || (keysRef.current[" "] && !actionLatchRef.current)) {
           actionRequestRef.current = false;
           actionLatchRef.current = true;
@@ -1312,7 +1313,7 @@ export default function EmberlineGame() {
           )}
 
           {!docked && (
-            <div className="touch-controls" aria-label="Touch flight controls">
+            <div className="touch-controls" aria-label="Touch flight controls" onContextMenu={(event) => event.preventDefault()}>
               <div><button onPointerDown={() => setTouch("a", true)} onPointerUp={() => setTouch("a", false)} onPointerLeave={() => setTouch("a", false)}>↺</button><button onPointerDown={() => setTouch("d", true)} onPointerUp={() => setTouch("d", false)} onPointerLeave={() => setTouch("d", false)}>↻</button></div>
               <button className="touch-thrust" onPointerDown={() => setTouch("w", true)} onPointerUp={() => setTouch("w", false)} onPointerLeave={() => setTouch("w", false)}>THRUST</button>
               <button onPointerDown={() => setTouch("shift", true)} onPointerUp={() => setTouch("shift", false)} onPointerLeave={() => setTouch("shift", false)}>BRAKE</button>
