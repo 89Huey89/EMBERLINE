@@ -41,3 +41,6 @@ yarn-error.log*
 
 # TypeScript incremental build artifact
 tsconfig.tsbuildinfo
+
+# Ephemeral agent worktrees
+.claude/worktrees/
