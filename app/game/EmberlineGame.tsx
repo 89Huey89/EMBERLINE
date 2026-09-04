@@ -11,7 +11,7 @@ import {
   UPGRADES,
   WORLD,
 } from "./data";
-import type { CargoKind, CelestialBody, ContractDefinition, ShipDefinition, Station } from "./types";
+import type { CargoKind, CelestialBody, ContractDefinition, ShipDefinition, Station, Vec2 } from "./types";
 import { drawCargoUnit } from "./art/cargo";
 import { drawPlanet, planetParallax, PLANET_SCALE } from "./art/planets";
 import { drawShipPortrait, shipArtFor } from "./art/ships";
@@ -449,6 +449,9 @@ export default function EmberlineGame() {
   const actionRequestRef = useRef(false);
   const salvageSeededRef = useRef(false);
   const cameraRef = useRef({ x: -320, y: 30, zoom: 0.78 });
+  const dockPanelRef = useRef<HTMLElement | null>(null);
+  /** Height of the strip above the dock panel, in CSS px; 0 means "use the full canvas". */
+  const viewHeightRef = useRef(0);
   const titlePoseRef = useRef<ShipPose | null>(null);
   const starRef = useRef(Array.from({ length: 340 }, (_, index) => ({
     x: ((index * 1877) % 10000) / 10000,
@@ -460,6 +463,8 @@ export default function EmberlineGame() {
   const [screen, setScreen] = useState<"title" | "game">("title");
   const [ui, setUi] = useState<UiSnapshot>(() => snapshot(gameRef.current));
   const [panel, setPanel] = useState<"contracts" | "service" | "fleet">("contracts");
+  /** Collapses the mission card to a one-line strip. Only has a visual effect on narrow (mobile) layouts. */
+  const [missionCollapsed, setMissionCollapsed] = useState(true);
   const [mapOpen, setMapOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -473,6 +478,19 @@ export default function EmberlineGame() {
     game.messageUntil = game.elapsed + duration;
     setUi(snapshot(game));
   }, []);
+
+  /** Re-measures the strip above the dock panel. Cheap, but only worth calling when that layout can have changed. */
+  const measureDockPanel = useCallback(() => {
+    const canvas = canvasRef.current;
+    const panel = dockPanelRef.current;
+    viewHeightRef.current = canvas && panel ? Math.max(120, panel.getBoundingClientRect().top - canvas.getBoundingClientRect().top) : 0;
+  }, []);
+
+  /** Stable ref callback: React only invokes it when the panel mounts or unmounts (dock / undock), never on re-render. */
+  const setDockPanelNode = useCallback((node: HTMLElement | null) => {
+    dockPanelRef.current = node;
+    measureDockPanel();
+  }, [measureDockPanel]);
 
   useEffect(() => {
     setHasSave(Boolean(localStorage.getItem(SAVE_KEY)));
@@ -703,7 +721,10 @@ export default function EmberlineGame() {
         .sort((a, b) => a.dist - b.dist)[0];
       const speed = Math.hypot(game.ship.vx, game.ship.vy);
       if (nearbyStation && nearbyStation.dist < 105) {
-        if (speed > 36) return notify(`Approach too fast: ${Math.round(speed)} m/s. Hold SHIFT to brake.`);
+        if (speed > 36) {
+          const hint = game.upgrades.includes("retro") ? "Hold SHIFT to brake." : "Turn the nose against your vector and burn it off.";
+          return notify(`Approach too fast: ${Math.round(speed)} m/s. ${hint}`);
+        }
         dock(game, nearbyStation.station);
         return;
       }
@@ -834,13 +855,17 @@ export default function EmberlineGame() {
       const rcsFactor = game.upgrades.includes("rcs") ? 1.22 : 1;
       const tankFactor = game.upgrades.includes("tank") ? 1.35 : 1;
       const capacity = shipDef.fuelCapacity * tankFactor;
+      const retroFitted = game.upgrades.includes("retro");
       const thrusting = Boolean(keysRef.current.w || keysRef.current.arrowup);
-      const reversing = Boolean(keysRef.current.s || keysRef.current.arrowdown);
+      // Reverse, strafe, and assisted brake all fire the retro-thruster pods. Without them fitted,
+      // the only way to slow down is to turn the nose and burn the main drive against the vector.
+      const reversing = retroFitted && Boolean(keysRef.current.s || keysRef.current.arrowdown);
       const turning = (keysRef.current.a || keysRef.current.arrowleft ? -1 : 0) + (keysRef.current.d || keysRef.current.arrowright ? 1 : 0);
-      const strafing = (keysRef.current.q ? -1 : 0) + (keysRef.current.e ? 1 : 0);
-      const braking = Boolean(keysRef.current.shift);
+      const strafing = retroFitted ? (keysRef.current.q ? -1 : 0) + (keysRef.current.e ? 1 : 0) : 0;
+      const braking = retroFitted && Boolean(keysRef.current.shift);
       let engineAmount = 0;
       let appliedForce = 0;
+      let brakingActive = false;
 
       if (game.ship.fuel > 0) {
         if (thrusting) {
@@ -870,6 +895,7 @@ export default function EmberlineGame() {
             game.ship.vy -= (game.ship.vy / speed) * decel * dt;
             appliedForce = Math.max(appliedForce, shipDef.reverseThrust * 1.25);
             engineAmount = Math.max(engineAmount, 0.56);
+            brakingActive = true;
           }
         }
         if (appliedForce > 0) {
@@ -916,8 +942,8 @@ export default function EmberlineGame() {
         if (distance(game.ship, pickup) < (game.upgrades.includes("scanner") ? 520 : 215)) pickup.discovered = true;
       });
 
-      if (engineAmount > 0.2 && Math.random() < dt * 28) {
-        const art = shipArtFor(shipDef);
+      const art = shipArtFor(shipDef);
+      if (thrusting && Math.random() < dt * 28) {
         const exhaust = -art.exhaust * art.scale;
         game.particles.push({
           x: game.ship.x - Math.cos(game.ship.angle) * exhaust,
@@ -929,6 +955,33 @@ export default function EmberlineGame() {
           size: 2 + Math.random() * 3,
           color: Math.random() > 0.4 ? "#e68449" : "#f6d27b",
         });
+      }
+      // Retro pods: small white puffs from the port/starboard mounts, distinct from the main flame.
+      // Reverse and assisted brake fire both ports forward; strafing fires whichever port pushes the right way.
+      if (retroFitted && (reversing || brakingActive || strafing)) {
+        const shipCos = Math.cos(game.ship.angle), shipSin = Math.sin(game.ship.angle);
+        const emitRetroPuff = (port: Vec2, dirX: number, dirY: number) => {
+          if (Math.random() >= dt * 24) return;
+          const worldDirX = dirX * shipCos - dirY * shipSin;
+          const worldDirY = dirX * shipSin + dirY * shipCos;
+          game.particles.push({
+            x: game.ship.x + (port.x * shipCos - port.y * shipSin) * art.scale,
+            y: game.ship.y + (port.x * shipSin + port.y * shipCos) * art.scale,
+            vx: game.ship.vx + worldDirX * (24 + Math.random() * 16),
+            vy: game.ship.vy + worldDirY * (24 + Math.random() * 16),
+            life: 0.4,
+            maxLife: 0.4,
+            size: 1 + Math.random() * 1.3,
+            color: Math.random() > 0.5 ? "#f4faf8" : "#cfe6e2",
+          });
+        };
+        const [port, starboard] = art.retroPorts;
+        if (reversing || brakingActive) {
+          emitRetroPuff(port, 1, 0);
+          emitRetroPuff(starboard, 1, 0);
+        }
+        if (strafing < 0) emitRetroPuff(starboard, 0, 1);
+        if (strafing > 0) emitRetroPuff(port, 0, -1);
       }
       game.particles.forEach((particle) => {
         particle.x += particle.vx * dt;
@@ -973,7 +1026,8 @@ export default function EmberlineGame() {
         canvas.width = width;
         canvas.height = height;
       }
-      return { width: rect.width, height: rect.height, dpr };
+      const viewHeight = viewHeightRef.current || rect.height;
+      return { width: rect.width, height: rect.height, dpr, viewHeight };
     };
 
     const drawCargo = (ctx: CanvasRenderingContext2D, kind: CargoKind, size = 1, condition = 1) => {
@@ -1017,8 +1071,8 @@ export default function EmberlineGame() {
       ctx.restore();
     };
 
-    const draw = (game: GameMutable, dims: { width: number; height: number; dpr: number }) => {
-      const { width, height, dpr } = dims;
+    const draw = (game: GameMutable, dims: { width: number; height: number; dpr: number; viewHeight: number }) => {
+      const { width, height, dpr, viewHeight } = dims;
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       context.clearRect(0, 0, width, height);
       const bg = context.createRadialGradient(width * 0.7, height * 0.25, 0, width * 0.5, height * 0.5, width);
@@ -1056,7 +1110,7 @@ export default function EmberlineGame() {
       });
 
       context.save();
-      context.translate(width / 2 + shakeX, height / 2 + shakeY);
+      context.translate(width / 2 + shakeX, viewHeight / 2 + shakeY);
       context.scale(cam.zoom, cam.zoom);
       context.translate(-cam.x, -cam.y);
 
@@ -1212,6 +1266,7 @@ export default function EmberlineGame() {
   const active = contractById(ui.activeContractId);
   const currentShip = shipById(ui.shipId);
   const fuelCapacity = currentShip.fuelCapacity * (ui.upgrades.includes("tank") ? 1.35 : 1);
+  const retroFitted = ui.upgrades.includes("retro");
   const cargoMass = ui.cargo.reduce((sum, item) => sum + CARGO[item.kind].mass, 0);
   const contractsHere = useMemo(() => CONTRACTS.filter((contract) => contract.origin === ui.dockedId), [ui.dockedId]);
 
@@ -1258,31 +1313,51 @@ export default function EmberlineGame() {
             </nav>
           </header>
 
-          <aside className="mission-card plate">
-            <div className="panel-kicker">{active ? "ACTIVE MANIFEST" : "OPEN SHIFT"}<span className={`stamp ${active?.kind === "cryogenic" ? "cold" : ""}`}>{active?.kind ?? "self-directed"}</span></div>
-            {active ? (
-              <>
-                <h2>{active.title}</h2>
-                <p>{active.description}</p>
-                <div className="manifest-line">
-                  <CargoPortrait kind={active.cargo} count={active.quantity} />
-                  <div><b>{CARGO[active.cargo].name}</b>{CARGO[active.cargo].short} × {active.quantity} · {CARGO[active.cargo].mass * active.quantity} t</div>
-                </div>
-                <div className="route-line"><span>{stationById(active.origin)?.callSign}</span><i /><span>{stationById(active.destination)?.callSign}</span></div>
-                <div className="objective">
-                  <small>NEXT ACTION</small>
-                  <strong>{ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(active.destination)?.name}`}</strong>
-                </div>
-                {active.timeLimit && <div className={`timer ${ui.contractTime < 30 ? "urgent" : ""}`}><span>TIME BONUS</span><b>{seconds(ui.contractTime)}</b></div>}
-                <button className="text-button danger" onClick={abandonContract}>Abandon contract</button>
-              </>
-            ) : (
-              <>
-                <h2>Choose your next line</h2>
-                <p>Dock at a station to review local work, or set a course for The Wake and hunt salvage.</p>
-                <button className="text-button" onClick={() => setMapOpen(true)}>Open system chart →</button>
-              </>
-            )}
+          <aside className={`mission-card plate ${missionCollapsed ? "collapsed" : ""}`}>
+            <div className="panel-kicker">
+              <span>{active ? "ACTIVE MANIFEST" : "OPEN SHIFT"}</span>
+              <span className="panel-kicker-tools">
+                <span className={`stamp ${active?.kind === "cryogenic" ? "cold" : ""}`}>{active?.kind ?? "self-directed"}</span>
+                <button
+                  type="button"
+                  className="mission-toggle"
+                  onClick={() => setMissionCollapsed((value) => !value)}
+                  aria-expanded={!missionCollapsed}
+                  aria-label={missionCollapsed ? "Expand active manifest" : "Collapse active manifest"}
+                >
+                  {missionCollapsed ? "▾" : "▴"}
+                </button>
+              </span>
+            </div>
+            <button type="button" className="mission-summary" onClick={() => setMissionCollapsed(false)}>
+              <b>{active ? active.title : "Choose your next line"}</b>
+              <span>{active ? (ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(active.destination)?.callSign}`) : "Open system chart →"}</span>
+            </button>
+            <div className="mission-detail">
+              {active ? (
+                <>
+                  <h2>{active.title}</h2>
+                  <p>{active.description}</p>
+                  <div className="manifest-line">
+                    <CargoPortrait kind={active.cargo} count={active.quantity} />
+                    <div><b>{CARGO[active.cargo].name}</b>{CARGO[active.cargo].short} × {active.quantity} · {CARGO[active.cargo].mass * active.quantity} t</div>
+                  </div>
+                  <div className="route-line"><span>{stationById(active.origin)?.callSign}</span><i /><span>{stationById(active.destination)?.callSign}</span></div>
+                  <div className="objective">
+                    <small>NEXT ACTION</small>
+                    <strong>{ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(active.destination)?.name}`}</strong>
+                  </div>
+                  {active.timeLimit && <div className={`timer ${ui.contractTime < 30 ? "urgent" : ""}`}><span>TIME BONUS</span><b>{seconds(ui.contractTime)}</b></div>}
+                  <button className="text-button danger" onClick={abandonContract}>Abandon contract</button>
+                </>
+              ) : (
+                <>
+                  <h2>Choose your next line</h2>
+                  <p>Dock at a station to review local work, or set a course for The Wake and hunt salvage.</p>
+                  <button className="text-button" onClick={() => setMapOpen(true)}>Open system chart →</button>
+                </>
+              )}
+            </div>
           </aside>
 
           <aside className="telemetry-card plate">
@@ -1296,7 +1371,7 @@ export default function EmberlineGame() {
           </aside>
 
           {docked && (
-            <section className="dock-panel plate">
+            <section className="dock-panel plate" ref={setDockPanelNode}>
               <div className="dock-heading">
                 <div>
                   <span>BERTHED AT {docked.callSign}</span>
@@ -1358,19 +1433,28 @@ export default function EmberlineGame() {
           {!docked && (
             <div className="flight-controls plate" aria-label="Flight controls">
               <div><kbd>A</kbd><kbd>D</kbd><span>ROTATE</span></div>
-              <div><kbd>Q</kbd><kbd>E</kbd><span>STRAFE</span></div>
+              <div className={retroFitted ? "" : "locked"} title={retroFitted ? undefined : "Requires Retro thruster pair"}><kbd>Q</kbd><kbd>E</kbd><span>STRAFE</span></div>
               <div><kbd>W</kbd><span>MAIN DRIVE</span></div>
-              <div><kbd>S</kbd><span>RETRO</span></div>
-              <div className="emphasis"><kbd>SHIFT</kbd><span>ASSISTED BRAKE</span></div>
+              <div className={retroFitted ? "" : "locked"} title={retroFitted ? undefined : "Requires Retro thruster pair"}><kbd>S</kbd><span>RETRO</span></div>
+              <div className={`emphasis ${retroFitted ? "" : "locked"}`} title={retroFitted ? undefined : "Requires Retro thruster pair"}><kbd>SHIFT</kbd><span>ASSISTED BRAKE</span></div>
               <div className="emphasis"><kbd>SPACE</kbd><span>CLAMP / DOCK</span></div>
             </div>
           )}
 
           {!docked && (
             <div className="touch-controls" aria-label="Touch flight controls" onContextMenu={(event) => event.preventDefault()}>
-              <div><button onPointerDown={() => setTouch("a", true)} onPointerUp={() => setTouch("a", false)} onPointerLeave={() => setTouch("a", false)}>↺</button><button onPointerDown={() => setTouch("d", true)} onPointerUp={() => setTouch("d", false)} onPointerLeave={() => setTouch("d", false)}>↻</button></div>
+              <div className="touch-cluster">
+                <div className="touch-row">
+                  <button onPointerDown={() => setTouch("a", true)} onPointerUp={() => setTouch("a", false)} onPointerLeave={() => setTouch("a", false)}>↺</button>
+                  <button onPointerDown={() => setTouch("d", true)} onPointerUp={() => setTouch("d", false)} onPointerLeave={() => setTouch("d", false)}>↻</button>
+                </div>
+                <div className="touch-row">
+                  <button disabled={!retroFitted} onPointerDown={() => setTouch("q", true)} onPointerUp={() => setTouch("q", false)} onPointerLeave={() => setTouch("q", false)}>◀</button>
+                  <button disabled={!retroFitted} onPointerDown={() => setTouch("e", true)} onPointerUp={() => setTouch("e", false)} onPointerLeave={() => setTouch("e", false)}>▶</button>
+                </div>
+              </div>
               <button className="touch-thrust" onPointerDown={() => setTouch("w", true)} onPointerUp={() => setTouch("w", false)} onPointerLeave={() => setTouch("w", false)}>THRUST</button>
-              <button onPointerDown={() => setTouch("shift", true)} onPointerUp={() => setTouch("shift", false)} onPointerLeave={() => setTouch("shift", false)}>BRAKE</button>
+              <button disabled={!retroFitted} onPointerDown={() => setTouch("shift", true)} onPointerUp={() => setTouch("shift", false)} onPointerLeave={() => setTouch("shift", false)}>BRAKE</button>
               <button onClick={() => { actionRequestRef.current = true; }}>CLAMP</button>
             </div>
           )}
@@ -1401,8 +1485,8 @@ export default function EmberlineGame() {
           <div className="guide-grid">
             <article><span>01</span><h3>Take local work</h3><p>While docked, choose a manifest from the contract board. Repeated routes gradually pay less as local demand is met.</p></article>
             <article><span>02</span><h3>Secure the load</h3><p>Release the berth, drift within 92 m of each staged unit, match its speed, then press <kbd>SPACE</kbd>. Cargo changes mass and handling.</p></article>
-            <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward. <kbd>A</kbd>/<kbd>D</kbd> rotate. <kbd>Q</kbd>/<kbd>E</kbd> strafe. The teal line is your true velocity.</p></article>
-            <article><span>04</span><h3>Make a clean arrival</h3><p>Hold <kbd>SHIFT</kbd> for assisted braking. Enter a station’s capture envelope below 36 m/s, then press <kbd>SPACE</kbd>.</p></article>
+            <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward. <kbd>A</kbd>/<kbd>D</kbd> rotate. The teal line is your true velocity. A stock hull only burns forward — turn the nose against your vector to slow down.</p></article>
+            <article><span>04</span><h3>Make a clean arrival</h3><p>Enter a station’s capture envelope below 36 m/s, then press <kbd>SPACE</kbd>. A fitted retro thruster pair adds <kbd>S</kbd> reverse, <kbd>Q</kbd>/<kbd>E</kbd> strafe, and <kbd>SHIFT</kbd> assisted braking.</p></article>
             <article><span>05</span><h3>Read gravity</h3><p>Curved guide rings mark strong gravity wells. Close planetary passes bend your route and can save propellant.</p></article>
             <article><span>06</span><h3>Work The Wake</h3><p>Unmarked debris lies northeast of Rayleigh. Fit a better scanner, recover useful objects, and deliver salvage to any port.</p></article>
           </div>
