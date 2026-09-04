@@ -27,8 +27,9 @@ test("server-renders the finished EMBERLINE game shell", async () => {
 });
 
 test("keeps the game systems modular and browser-native", async () => {
-  const [game, data, styles, packageJson] = await Promise.all([
+  const [game, flight, data, styles, packageJson] = await Promise.all([
     readFile(new URL("../app/game/EmberlineGame.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/game/flight.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/game/data.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -36,12 +37,19 @@ test("keeps the game systems modular and browser-native", async () => {
   assert.match(game, /requestAnimationFrame/);
   assert.match(game, /localStorage\.setItem/);
   assert.match(game, /AudioContext/);
-  assert.match(game, /body\.gravity/);
   assert.match(game, /cargoMass/);
+  assert.match(game, /drawMinimap/);
+  // The gravity law and the solid bodies live in one module now, read both by
+  // the contact solver and by the track projected ahead of the ship. A warning
+  // built on a second copy of either would eventually stop matching the game.
+  assert.match(flight, /body\.gravity/);
+  assert.match(flight, /export function solidsNear/);
+  assert.match(flight, /export function projectTrack/);
   assert.match(data, /export const SYSTEMS/);
   assert.match(data, /export const SHIPS/);
   assert.match(data, /export function systemById/);
   assert.match(styles, /@media \(max-width: 760px\)/);
   assert.match(styles, /prefers-reduced-motion/);
+  assert.match(styles, /\.hazard-strip/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });

@@ -200,6 +200,26 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
 .tow-button { color: var(--danger); border-color: rgba(230,106,74,.45); }
 .tow-button::before { content: ""; width: 6px; height: 6px; background: var(--danger); animation: urgency 1s steps(1) infinite; }
 
+/* ---------- the scope and the proximity strip ----------
+   The scope is an instrument, so it is teal and it is round: a plate of
+   local space with the ship at its centre. The strip is the only thing on
+   the deck allowed to interrupt, so it is the only thing that pulses. */
+.scope { position: absolute; z-index: 4; left: 20px; bottom: 18px; width: 168px; padding: 8px 8px 6px; border: 1px solid var(--plate-edge); background: linear-gradient(180deg, var(--plate-2), var(--plate)); box-shadow: inset 0 1px 0 rgba(231,223,205,.06), 0 2px 0 #000, 0 16px 36px rgba(0,0,0,.45); }
+.scope-plate { display: block; width: 152px; height: 152px; }
+.scope-range { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; margin-top: 6px; padding: 3px 5px 2px; border: 1px solid var(--plate-edge); background: transparent; color: var(--teal); cursor: pointer; font: var(--stencil); font-size: 8px; letter-spacing: .14em; }
+.scope-range:hover { border-color: var(--teal); }
+.scope-range kbd { padding: 1px 4px; border: 1px solid #6a685c; background: #23241f; color: var(--bone); box-shadow: inset 0 -1px 0 #060808; }
+
+.hazard-strip { position: absolute; z-index: 6; top: 78px; left: 50%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; max-width: min(620px, calc(100vw - 640px)); padding: 8px 15px 7px; transform: translateX(-50%); border: 1px solid var(--amber-deep); border-left: 4px solid var(--amber); background: rgba(21,23,26,.94); box-shadow: 0 2px 0 #000, 0 14px 30px rgba(0,0,0,.45); font-family: var(--font-mono-ui), monospace; }
+.hazard-kicker { color: var(--amber); font: var(--stencil); font-size: 8px; letter-spacing: .2em; }
+.hazard-strip b { color: var(--bone); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.hazard-count { color: var(--amber-light); font-size: 15px; font-variant-numeric: tabular-nums; }
+.hazard-speed { color: var(--muted); font-size: 10px; }
+.hazard-strip em { color: var(--bone-dim); font-size: 10px; font-style: normal; white-space: nowrap; }
+.hazard-strip.critical { border-color: var(--oxide); border-left-color: var(--danger); }
+.hazard-strip.critical .hazard-kicker { color: var(--danger); animation: urgency 1s steps(1) infinite; }
+.hazard-strip.critical .hazard-count { color: var(--danger); }
+
 .flight-controls { position: absolute; z-index: 4; left: 50%; bottom: 18px; display: flex; transform: translateX(-50%); padding: 0; }
 .flight-controls.plate::before { background: var(--castings), var(--hazard) 0 0 / 100% 4px no-repeat; }
 .flight-controls > div { display: flex; min-width: 88px; height: 52px; padding: 9px 12px 5px; align-items: center; justify-content: center; gap: 4px; flex-wrap: wrap; border-right: 1px solid var(--plate-edge); }
@@ -324,6 +344,8 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
 .guide-grid kbd { display: inline-block; min-width: 14px; padding: 1px 4px 0; border: 1px solid #0b0a07; border-radius: 2px; background: linear-gradient(180deg, #f1eadb, #cfc7b4); color: #17140d; text-align: center; box-shadow: 0 1px 0 #6f6858; }
 
 @media (max-width: 1050px) {
+  /* the plates either side are narrower here, and so is the gap the strip has to keep to */
+  .hazard-strip { max-width: calc(100vw - 560px); }
   .top-readouts > div { min-width: 90px; padding-inline: 12px; }
   .utility-nav button { min-width: 70px; }
   .mission-card, .telemetry-card { width: 248px; }
@@ -502,6 +524,27 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
   .is-cockpit .ship-list article.selected { border-left: 3px solid var(--amber); box-shadow: none; }
   .is-cockpit .ship-list article.selected::after { top: 14px; right: 14px; }
 
+  /* ---- the scope and the strip ----
+     The strip rides inside the dash band, so a warning never has to be
+     drawn over the window it is warning about; the dash simply grows and
+     the ship stays centred in what is left. */
+  .hud .hazard-strip { position: static; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "kicker what count" "action action action"; gap: 2px 9px; max-width: none; padding: 7px 16px 8px; border: 0; border-top: 1px solid var(--hair); border-left: 3px solid var(--amber); background: rgba(220,169,82,.1); box-shadow: none; transform: none; }
+  .hud .hazard-strip .hazard-kicker { grid-area: kicker; align-self: center; }
+  .hud .hazard-strip b { grid-area: what; align-self: center; overflow: hidden; font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+  .hud .hazard-strip .hazard-count { grid-area: count; align-self: center; font-size: 14px; }
+  .hud .hazard-strip .hazard-speed { display: none; }
+  .hud .hazard-strip em { grid-area: action; font-size: 9px; white-space: normal; }
+  .hud .hazard-strip.critical { border-left-color: var(--danger); background: rgba(198,93,54,.16); }
+
+  /* Hung off the bottom of the dash, the way the drawer is, so it does not
+     have to guess how tall the dash is: a warning strip appearing pushes the
+     scope down with it rather than landing on top of it — and an opened
+     drawer, which sits a layer above, covers it the way it covers the view. */
+  .hud > .scope { z-index: 1; top: 100%; right: auto; bottom: auto; left: calc(10px + var(--sal)); width: 92px; padding: 0; border: 0; background: none; box-shadow: none; }
+  .is-cockpit .scope-plate { width: 92px; height: 92px; }
+  .is-cockpit .scope-range { justify-content: center; margin-top: 4px; padding: 3px 6px 2px; border-color: var(--hair); border-radius: 3px; background: var(--glass); }
+  .is-cockpit .scope-range kbd { display: none; }
+
   /* ---- chart and guide fill the screen edge to edge ---- */
   .modal { inset: 0; border: 0; animation: sheet-in .22s ease-out; }
   .modal.plate { background: #090c0e; box-shadow: none; }
@@ -538,7 +581,8 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
    sheet stands beside the berth instead of under it */
 @media (pointer: coarse) and (max-height: 540px) and (orientation: landscape) {
   :root { --hud-h: calc(59px + var(--sat)); }
-  .hud { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "main ledger" "gauges gauges"; padding-left: var(--sal); padding-right: var(--sar); }
+  .hud { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "main ledger" "gauges gauges" "hazard hazard"; padding-left: var(--sal); padding-right: var(--sar); }
+  .hud .hazard-strip { grid-area: hazard; }
   .hud-main { grid-area: main; }
   .hud-gauges { grid-area: gauges; }
   .hud-ledger { grid-area: ledger; max-width: 50vw; border-top: 0; border-left: 1px solid var(--hair); }

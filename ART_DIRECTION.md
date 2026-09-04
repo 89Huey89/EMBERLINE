@@ -144,6 +144,20 @@ in `app/globals.css`:
 - **Same drawings.** Anything the menus show that also flies is drawn by the
   same code: ships on the shipyard cards, cargo on the manifests, planets on the
   chart (`usePortrait` in `EmberlineGame.tsx`).
+- **Instruments that look ahead.** The scope is a round plate of local space
+  at true scale, ship at the centre, north up: worlds as their decks in oxide,
+  ports as the chart's amber diamonds, a debris field as the chunks actually
+  in it, and across it the ship's own track. It is an instrument, so it is
+  teal-labelled and it never compresses a distance the way the chart does.
+  The proximity strip is the one thing on the deck permitted to interrupt: a
+  single line naming what the track ends on, how long there is, how fast, and
+  the one control that answers it — amber while there is still time, oxide
+  once there is not, and the only thing on screen that pulses. On the desktop
+  deck the strip sits under the top bar and the scope stands bottom left; in
+  the cockpit both hang off the dash, so a warning pushes the scope down
+  rather than landing on it. Drawings live in `app/game/art/minimap.ts`; the
+  track and what it hits come from `app/game/flight.ts`.
+
 - **The cockpit.** On a phone the flight deck is quiet, and the window takes
   most of the screen. A thin band of dark glass runs along the top: speed,
   range and closing, propellant and hull as hairlines, three tool icons, and
@@ -188,3 +202,4 @@ nothing else. Warm colours belong to structure and light.
 6. Station character modules — done.
 7. Mule, Atlas, Mastiff on the same vocabulary.
 8. The Wake: debris built from the same parts vocabulary — done.
+9. The scope and the proximity strip — done.

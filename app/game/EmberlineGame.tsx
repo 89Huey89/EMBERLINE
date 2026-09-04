@@ -11,11 +11,14 @@ import {
 import type { CargoKind, LineGate, ContractDefinition, SalvageField, ShipDefinition, Station, StarSystem, Vec2 } from "./types";
 import { drawCargoUnit } from "./art/cargo";
 import { drawDebrisChunk } from "./art/debris";
+import { drawMinimap, MINIMAP_RANGES, rangeLabel } from "./art/minimap";
 import { ATMOSPHERE_TOP, drawPlanet, planetParallax, SURFACE_CONTACT } from "./art/planets";
 import { CORONA_REACH, drawStar, starLight } from "./art/star";
 import { drawChart } from "./art/chart";
 import { drawShipPortrait, shipArtFor } from "./art/ships";
-import { BERTH_CAPTURE, berthPoint, drawStation, stationColliders } from "./art/stations";
+import { BERTH_CAPTURE, berthPoint, drawStation } from "./art/stations";
+import { avoidance, gravityAt, GRAVITY_REACH, lookAhead, projectTrack, solidsNear } from "./flight";
+import type { Track } from "./flight";
 import { bodyOrbitRadius, bodyPose, fieldPose, gatePose, orbitRadius, stationPose } from "./orbits";
 
 const TAU = Math.PI * 2;
@@ -84,28 +87,29 @@ const ARREARS_CEILING = 3000;
 const SPOOL_DECAY = 3;
 /** Shake above this reads as a real knock, and knocks break the spool outright. */
 const SPOOL_BREAK_SHAKE = 6;
-/**
- * Ceiling on gravitational acceleration, m/s².
- *
- * Ships accelerate at 13-19 m/s² empty, so a capped well can be climbed out
- * of light and cannot be climbed straight out of loaded. That is the point:
- * a close pass with freight aboard has to be flown around, not through.
- */
-const GRAVITY_CAP = 16;
-/**
- * Where a body's pull stops mattering, in multiples of its radius.
- *
- * Full strength inside GRAVITY_FULL, nothing beyond GRAVITY_REACH, eased
- * between. The ports hold an authored circle rather than a true orbit (see
- * `orbits.ts`), so they are not moving fast enough to balance a real pull at
- * their radius. Reach is set just inside the closest of them, which leaves
- * every port in quiet space where a ship parked alongside one stays parked.
- * Every hazard — the deck at SURFACE_CONTACT, the atmosphere at
- * ATMOSPHERE_TOP — sits deep inside the full-strength zone, so buying that
- * quiet costs nothing where the danger actually is.
- */
-const GRAVITY_FULL = 2.2;
-const GRAVITY_REACH = 2.75;
+
+/* ------------------------------------------------------------------ */
+/* The proximity net                                                    */
+/*                                                                      */
+/* Every instrument on this ship used to describe where it IS. At 300   */
+/* m/s with freight aboard that is useless: the deck arrives in the     */
+/* time it takes to read the number, and a stock hull needs eight       */
+/* seconds to swing its nose around and burn the speed off. So the net  */
+/* flies the ship forward instead — the same gravity, the same solids   */
+/* the contact solver charges for (see `flight.ts`) — and reports the   */
+/* one thing worth knowing: how long there is left to act, measured     */
+/* against how long THIS hull, at THIS mass, would need.                */
+/*                                                                      */
+/* The warning is about damage, never about proximity. A contact under  */
+/* the scuff speed costs nothing, so an arrival at a pad is silent no   */
+/* matter how close it comes; only the excess over that speed has to be */
+/* burned off, and only that excess is counted.                         */
+/* ------------------------------------------------------------------ */
+
+/** Lead time in hand, below which the net speaks up. Above it, a track is just a track. */
+const HAZARD_CAUTION_SLACK = 6;
+/** Seconds between spoken proximity warnings, so a long approach is not a monologue. */
+const HAZARD_INTERVAL = 5;
 
 /* ------------------------------------------------------------------ */
 /* Freight condition                                                    */
@@ -390,6 +394,8 @@ type UiSnapshot = {
     /** True when an active manifest would be left behind by taking the line. */
     stranding: boolean;
   } | null;
+  /** What the ship is about to run into, while there is still time to be told. */
+  alert: HazardAlert | null;
   loadingRemaining: number;
 };
 
@@ -629,6 +635,132 @@ function laneStanding(system: StarSystem, gate: LineGate, ship: GameMutable["shi
   return { at, dx, dy, bearing, along, lateral, speedAlong, drift, inLane, clear, holding };
 }
 
+/**
+ * What this ship, loaded the way it is loaded, can actually do.
+ *
+ * Handling is never a property of the ship record alone: freight adds mass
+ * to every burn and inertia to every turn, and fitted hardware changes all
+ * of it. The flight loop and the proximity net both have to agree on these
+ * numbers or the net would be warning about a ship nobody is flying.
+ */
+function handling(game: GameMutable) {
+  const shipDef = shipById(game.shipId);
+  const cargoMass = game.cargo.reduce((sum, item) => sum + CARGO[item.kind].mass, 0);
+  const totalMass = shipDef.dryMass + cargoMass;
+  const rcsFactor = game.upgrades.includes("rcs") ? 1.22 : 1;
+  const engineFactor = game.upgrades.includes("engine") ? 1.16 : 1;
+  const retro = game.upgrades.includes("retro");
+  return {
+    shipDef,
+    cargoMass,
+    totalMass,
+    engineFactor,
+    rcsFactor,
+    retro,
+    tankFactor: game.upgrades.includes("tank") ? 1.35 : 1,
+    /** What the freight's mass does to the RCS. */
+    inertia: 1 + (cargoMass / Math.max(1, shipDef.dryMass)) * 0.8,
+    /** Turning authority once that inertia is paid, rad/s². */
+    angular: (shipDef.rotation * rcsFactor) / (1 + (cargoMass / Math.max(1, shipDef.dryMass)) * 0.8),
+    /**
+     * The best deceleration available against the vector, m/s². With retro
+     * pods that is the assisted brake; without them it is the main drive,
+     * which first has to be pointed the other way.
+     */
+    decel: retro ? (shipDef.reverseThrust * 1.25) / totalMass : (shipDef.thrust * engineFactor) / totalMass,
+  };
+}
+
+/**
+ * The track this ship is on, or nothing at all while it is on a pad.
+ *
+ * How far along it the net looks is the ship's own answer, not a constant:
+ * see `lookAhead`. An empty courier holding station sees a few seconds; a
+ * loaded Atlas at cruise sees the whole minute it would take to stop.
+ */
+function shipTrack(game: GameMutable): Track | null {
+  if (game.dockedId) return null;
+  const rig = handling(game);
+  return projectTrack(activeSystem(game.systemId), game.ship, {
+    time: game.elapsed,
+    hullRadius: HULL_RADIUS[rig.shipDef.size],
+    debris: game.debris,
+    horizon: lookAhead({
+      speed: Math.hypot(game.ship.vx, game.ship.vy),
+      harmless: SCUFF_SPEED,
+      angular: rig.angular,
+      decel: rig.decel,
+      retro: rig.retro,
+      lead: HAZARD_CAUTION_SLACK,
+    }),
+  });
+}
+
+/** A contact the ship is going to make, and how much longer there is to do something about it. */
+type HazardAlert = {
+  /** The short name of what it will hit. */
+  what: string;
+  kind: NonNullable<Track["threat"]>["kind"];
+  /** Seconds until contact, coasting. */
+  time: number;
+  /** What the hull would be charged at, m/s. */
+  speed: number;
+  /** Clear distance to it now. */
+  range: number;
+  /** Lead time still in hand. Negative means the damage is already bought. */
+  slack: number;
+  level: "caution" | "critical";
+  /** The one thing to do about it, in the words this ship's controls use. */
+  action: string;
+};
+
+/**
+ * Read the track, and decide whether it is worth interrupting a pilot for.
+ *
+ * Two things keep this quiet. A contact the hull would shrug off is not a
+ * hazard at all, so every clean arrival at a pad passes in silence. And a
+ * contact this ship still has ample time to fly out of is not news either —
+ * the net waits until the lead time it needs is nearly spent, which is
+ * exactly when a pilot wants to hear about it and not before.
+ */
+function hazardAlert(game: GameMutable, track: Track | null): HazardAlert | null {
+  const threat = track?.threat;
+  if (!threat) return null;
+  const rig = handling(game);
+  const room = avoidance({
+    time: threat.time,
+    speed: threat.speed,
+    harmless: SCUFF_SPEED,
+    heading: game.ship.angle,
+    vx: game.ship.vx,
+    vy: game.ship.vy,
+    angular: rig.angular,
+    decel: rig.decel,
+    retro: rig.retro,
+    fuel: game.ship.fuel,
+  });
+  if (room.need <= 0) return null;
+  if (room.slack > HAZARD_CAUTION_SLACK) return null;
+  const critical = room.slack <= 0;
+  const within = `${Math.max(0, room.slack).toFixed(1)}s`;
+  return {
+    what: threat.label,
+    kind: threat.kind,
+    time: threat.time,
+    speed: threat.speed,
+    range: threat.range,
+    slack: room.slack,
+    level: critical ? "critical" : "caution",
+    action: game.ship.fuel <= 0
+      ? "Tank dry — nothing left to stop it with."
+      : threat.time < room.brake
+        ? "Turn across it — there is no room left to stop."
+        : rig.retro
+          ? critical ? "Brake now." : `Start braking within ${within}.`
+          : critical ? "Flip and burn now." : `Swing onto the vector within ${within}.`,
+  };
+}
+
 function snapshot(game: GameMutable): UiSnapshot {
   const system = activeSystem(game.systemId);
   const target = stationById(system, game.targetId);
@@ -684,6 +816,7 @@ function snapshot(game: GameMutable): UiSnapshot {
         stranding: Boolean(active),
       };
     })(),
+    alert: hazardAlert(game, shipTrack(game)),
     loadingRemaining: active ? Math.max(0, active.quantity - game.cargo.filter((item) => item.source === "contract").length) : 0,
   };
 }
@@ -995,6 +1128,10 @@ export default function EmberlineGame() {
   const salvageSeededRef = useRef(false);
   const lastWarningRef = useRef(0);
   const lastImpactRef = useRef(0);
+  /** The track the ship is coasting along, projected once a frame and read by everything that shows it. */
+  const trackRef = useRef<Track | null>(null);
+  const lastHazardRef = useRef(-Infinity);
+  const minimapRef = useRef<HTMLCanvasElement>(null);
   /** What last took hull off the ship, so a loss can say what caused it. */
   const lastHarmRef = useRef("a hard contact");
   const cameraRef = useRef({ x: -320, y: 30, zoom: 0.78 });
@@ -1022,6 +1159,8 @@ export default function EmberlineGame() {
   const mobile = useMobileLayout();
   const [mapOpen, setMapOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  /** Scope range in world units, or 0 for the range it picks for itself. */
+  const [scopeRange, setScopeRange] = useState(0);
   const [muted, setMuted] = useState(false);
   const [hasSave, setHasSave] = useState(false);
   const [savePulse, setSavePulse] = useState(false);
@@ -1032,6 +1171,11 @@ export default function EmberlineGame() {
     game.message = message;
     game.messageUntil = game.elapsed + duration;
     setUi(snapshot(game));
+  }, []);
+
+  /** Steps the scope up its ladder of ranges, then back to the range it picks for itself. */
+  const cycleScope = useCallback(() => {
+    setScopeRange((current) => (current ? MINIMAP_RANGES[MINIMAP_RANGES.indexOf(current) + 1] ?? 0 : MINIMAP_RANGES[0]));
   }, []);
 
   useEffect(() => {
@@ -1204,6 +1348,7 @@ export default function EmberlineGame() {
       if (key === " ") actionRequestRef.current = true;
       if (key === "m") setMapOpen((open) => !open);
       if (key === "h") setHelpOpen((open) => !open);
+      if (key === "n") cycleScope();
       if (key === "f") {
         gameRef.current.assist = !gameRef.current.assist;
         notify(`Flight assist ${gameRef.current.assist ? "engaged" : "released"}.`);
@@ -1221,7 +1366,7 @@ export default function EmberlineGame() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [notify]);
+  }, [cycleScope, notify]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1501,45 +1646,12 @@ export default function EmberlineGame() {
      * where its painted surface appears rather than at its raw radius.
      */
     const resolveContacts = (game: GameMutable, hullRadius: number) => {
-      const system = activeSystem(game.systemId);
-      const solids: { x: number; y: number; r: number; vx: number; vy: number; what: string }[] = [];
-      for (const station of system.stations) {
-        const pose = stationPose(system, station, game.elapsed);
-        if (distance(game.ship, pose) > 320) continue;
-        for (const circle of stationColliders(station, pose)) {
-          solids.push({ ...circle, vx: pose.vx, vy: pose.vy, what: `Contact with ${station.name} structure` });
-        }
-      }
-      for (const body of system.bodies) {
-        const at = bodyPose(system, body, game.elapsed);
-        solids.push({
-          x: at.x,
-          y: at.y,
-          r: body.radius * (body.star ? CORONA_REACH : SURFACE_CONTACT),
-          vx: at.vx,
-          vy: at.vy,
-          what: body.star ? `Contact with ${body.name} itself` : `Surface contact on ${body.name}`,
-        });
-      }
-      /* A field's hazard cloud only joins the list this close to it, so a
-         ship anywhere else in the system pays nothing for 30-plus circles
-         it could never reach. Reuses this same loop and applyImpact below —
-         a debris hit is a contact like any other, not a second damage rule. */
-      for (const field of system.fields) {
-        const cloud = fieldPose(system, field, game.elapsed);
-        if (distance(game.ship, cloud) >= field.radius + DEBRIS_ACTIVE_MARGIN) continue;
-        for (const chunk of game.debris) {
-          if (chunk.fieldId !== field.id) continue;
-          solids.push({
-            x: cloud.x + chunk.x,
-            y: cloud.y + chunk.y,
-            r: chunk.r,
-            vx: cloud.vx + chunk.vx,
-            vy: cloud.vy + chunk.vy,
-            what: `Debris strike in ${field.name}`,
-          });
-        }
-      }
+      /* The same list the proximity net looks ahead against (see
+         `flight.ts`), asked for at arm's length instead of at the horizon.
+         One list is the point: a warning about something that would not
+         charge the hull, or a hull charge nothing warned about, would each
+         be a lie in their own direction. */
+      const solids = solidsNear(activeSystem(game.systemId), game.ship, game.elapsed, hullRadius, game.debris);
 
       for (const solid of solids) {
         const dx = game.ship.x - solid.x;
@@ -1679,6 +1791,35 @@ export default function EmberlineGame() {
       if (game.spool >= best.gate.spool) catchLine(game, best.gate);
     };
 
+    /**
+     * Project the track, and say something about it while saying something
+     * can still help.
+     *
+     * The track is kept where the flight view and the scope can both read
+     * it, so all three instruments — the drawn path, the plate, and the
+     * strip across the dash — are one measurement rather than three
+     * opinions. Chatter is on its own timer and its own escalation: a
+     * caution is spoken once and then left to the strip, while a contact
+     * that can no longer be flown out of repeats and sounds, because at
+     * that point the only thing left to buy is the reflex.
+     */
+    const watchAhead = (game: GameMutable) => {
+      const track = shipTrack(game);
+      trackRef.current = track;
+      const alert = hazardAlert(game, track);
+      if (!alert) {
+        lastHazardRef.current = -Infinity;
+        return;
+      }
+      const interval = alert.level === "critical" ? HAZARD_INTERVAL / 2 : HAZARD_INTERVAL;
+      if (game.elapsed - lastHazardRef.current < interval) return;
+      lastHazardRef.current = game.elapsed;
+      if (alert.level === "critical") audio.tone("scan", muted);
+      notify(alert.level === "critical"
+        ? `Collision: ${alert.what} in ${alert.time.toFixed(1)} s at ${Math.round(alert.speed)} m/s. ${alert.action}`
+        : `Proximity: ${alert.what} in ${alert.time.toFixed(1)} s on the current track. ${alert.action}`, 4);
+    };
+
     const updateDebrisField = (game: GameMutable, dt: number) => {
       const system = activeSystem(game.systemId);
       const scanRange = game.upgrades.includes("scanner") ? 520 : 215;
@@ -1757,12 +1898,15 @@ export default function EmberlineGame() {
       }
       if (!running) {
         audio.setEngine(0, muted);
+        trackRef.current = null;
         if (screen === "title") titleExhaust(game, dt);
         return;
       }
 
       if (game.dockedId) {
         audio.setEngine(0, muted);
+        trackRef.current = null;
+        lastHazardRef.current = -Infinity;
         /* Berthed: the port is in orbit, so the ship rides it rather than
            hanging at a fixed point while its own dock travels away. */
         const berthedAt = stationById(system, game.dockedId);
@@ -1795,14 +1939,7 @@ export default function EmberlineGame() {
           nag(game, `${active.title}: hard deadline in ${Math.ceil(game.contractDeadline)}s. Miss it and the freight goes to salvage.`, 3);
         }
       }
-      const shipDef = shipById(game.shipId);
-      const cargoMass = game.cargo.reduce((sum, item) => sum + CARGO[item.kind].mass, 0);
-      const totalMass = shipDef.dryMass + cargoMass;
-      const engineFactor = game.upgrades.includes("engine") ? 1.16 : 1;
-      const rcsFactor = game.upgrades.includes("rcs") ? 1.22 : 1;
-      const tankFactor = game.upgrades.includes("tank") ? 1.35 : 1;
-      const capacity = shipDef.fuelCapacity * tankFactor;
-      const retroFitted = game.upgrades.includes("retro");
+      const { shipDef, totalMass, engineFactor, rcsFactor, inertia: cargoInertia, retro: retroFitted } = handling(game);
       const thrusting = Boolean(keysRef.current.w || keysRef.current.arrowup);
       // Reverse, strafe, and assisted brake all fire the retro-thruster pods. Without them fitted,
       // the only way to slow down is to turn the nose and burn the main drive against the vector.
@@ -1852,25 +1989,14 @@ export default function EmberlineGame() {
       }
       audio.setEngine(engineAmount, muted);
 
-      const cargoInertia = 1 + cargoMass / Math.max(1, shipDef.dryMass) * 0.8;
       if (turning) game.ship.av += turning * shipDef.rotation * rcsFactor / cargoInertia * dt;
       if (!turning && game.assist) game.ship.av *= Math.max(0, 1 - dt * 4.2);
       game.ship.av = clamp(game.ship.av, -2.6, 2.6);
       game.ship.angle += game.ship.av * dt;
 
-      for (const body of system.bodies) {
-        const at = bodyPose(system, body, game.elapsed);
-        const dx = at.x - game.ship.x;
-        const dy = at.y - game.ship.y;
-        const distSq = dx * dx + dy * dy;
-        const dist = Math.sqrt(distSq);
-        const radii = dist / body.radius;
-        if (radii >= GRAVITY_REACH) continue;
-        const fade = clamp((GRAVITY_REACH - radii) / (GRAVITY_REACH - GRAVITY_FULL), 0, 1);
-        const grav = Math.min(GRAVITY_CAP, body.gravity / Math.max(42000, distSq)) * fade * fade * (3 - 2 * fade);
-        game.ship.vx += (dx / Math.max(1, dist)) * grav * dt;
-        game.ship.vy += (dy / Math.max(1, dist)) * grav * dt;
-      }
+      const pull = gravityAt(system, game.ship, game.elapsed);
+      game.ship.vx += pull.x * dt;
+      game.ship.vy += pull.y * dt;
 
       /* Flight wear on the freight aboard. Fragile cargo takes it starting
          well under what any loaded ship can produce; everything else only
@@ -1901,6 +2027,7 @@ export default function EmberlineGame() {
       updateDebrisField(game, dt);
       resolveContacts(game, HULL_RADIUS[shipDef.size]);
       workTheLine(game, system, dt);
+      watchAhead(game);
 
       game.pickups.forEach((pickup) => {
         const held = pickup.anchor ? framePose(system, pickup.anchor.frame, game.elapsed) : null;
@@ -2311,15 +2438,57 @@ export default function EmberlineGame() {
       });
       context.globalAlpha = 1;
 
-      if (!game.dockedId && !title) {
-        context.strokeStyle = "rgba(115,198,187,.62)";
+      /*
+       * The track: where the ship goes if nothing is touched. It leaves the
+       * nose along the velocity vector — the teal line this used to be —
+       * and then bends, because gravity is integrated into it, so a pass
+       * that a straight line said would clear a world visibly falls into it
+       * instead. The bead sits where the ship will be in a little over
+       * three seconds, which is the reading the old vector gave.
+       */
+      const track = trackRef.current;
+      if (!game.dockedId && !title && track && track.points.length > 1) {
+        const threat = track.threat;
+        const alert = hazardAlert(game, track);
+        context.strokeStyle = alert
+          ? alert.level === "critical" ? "rgba(214,86,58,.9)" : "rgba(220,169,82,.75)"
+          : "rgba(115,198,187,.62)";
         context.lineWidth = 1.2 / cam.zoom;
+        context.setLineDash(alert ? [] : [9 / cam.zoom, 7 / cam.zoom]);
         context.beginPath();
-        context.moveTo(game.ship.x, game.ship.y);
-        context.lineTo(game.ship.x + game.ship.vx * 3.2, game.ship.y + game.ship.vy * 3.2);
+        track.points.forEach((point, index) => {
+          if (index === 0) context.moveTo(point.x, point.y);
+          else context.lineTo(point.x, point.y);
+        });
         context.stroke();
+        context.setLineDash([]);
+        const bead = track.points[Math.min(track.points.length - 1, Math.round(3.2 / track.step))];
         context.fillStyle = "rgba(115,198,187,.85)";
-        context.beginPath(); context.arc(game.ship.x + game.ship.vx * 3.2, game.ship.y + game.ship.vy * 3.2, 2.5 / cam.zoom, 0, TAU); context.fill();
+        context.beginPath(); context.arc(bead.x, bead.y, 2.5 / cam.zoom, 0, TAU); context.fill();
+        /* Where it ends, if it ends on something. Drawn even when the
+           contact would be harmless — a pilot lining up on a pad wants to
+           see the point they are aiming at — but only lettered and pulsed
+           once it is a hazard. */
+        if (threat) {
+          const pulse = alert ? 1 + Math.sin(game.elapsed * 6) * 0.12 : 1;
+          context.strokeStyle = alert
+            ? alert.level === "critical" ? "rgba(214,86,58,.95)" : "rgba(220,169,82,.8)"
+            : "rgba(115,198,187,.45)";
+          context.lineWidth = 1.4 / cam.zoom;
+          context.beginPath(); context.arc(threat.at.x, threat.at.y, (16 / cam.zoom) * pulse, 0, TAU); context.stroke();
+          for (const side of [-1, 1]) {
+            context.beginPath();
+            context.moveTo(threat.at.x - (11 / cam.zoom) * side, threat.at.y - 11 / cam.zoom);
+            context.lineTo(threat.at.x + (11 / cam.zoom) * side, threat.at.y + 11 / cam.zoom);
+            context.stroke();
+          }
+          if (alert && cam.zoom > 0.2) {
+            context.font = `700 ${11 / cam.zoom}px ui-monospace, monospace`;
+            context.textAlign = "center";
+            context.fillStyle = alert.level === "critical" ? "#e66a4a" : "#dca952";
+            context.fillText(`${threat.time.toFixed(1)}s`, threat.at.x, threat.at.y - 24 / cam.zoom);
+          }
+        }
       }
       const shipPose: ShipPose = title && titlePoseRef.current ? titlePoseRef.current : {
         x: game.ship.x,
@@ -2371,6 +2540,50 @@ export default function EmberlineGame() {
       context.fillRect(0, 0, width, height);
     };
 
+    /**
+     * The range the scope shows when the pilot has not chosen one.
+     *
+     * Wide enough to hold about nine seconds of travel, so the plate always
+     * covers roughly the ground a decision has to be made over, and wide
+     * enough to hold whatever the track has found. It snaps to a short
+     * ladder of ranges rather than sliding, because a plate whose scale
+     * changed continuously would be unreadable at exactly the moment it
+     * matters.
+     */
+    const autoScope = (game: GameMutable, track: Track | null) => {
+      const speed = Math.hypot(game.ship.vx, game.ship.vy);
+      const wanted = Math.max(speed * 9, (track?.threat?.range ?? 0) * 1.25, 600);
+      return MINIMAP_RANGES.find((range) => range >= wanted) ?? MINIMAP_RANGES[MINIMAP_RANGES.length - 1];
+    };
+
+    const paintScope = (game: GameMutable) => {
+      const canvas = minimapRef.current;
+      const ctx = canvas?.getContext("2d");
+      if (!canvas || !ctx) return;
+      const rect = canvas.getBoundingClientRect();
+      const size = Math.max(1, Math.round(Math.min(rect.width, rect.height)));
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const pixels = Math.round(size * dpr);
+      if (canvas.width !== pixels || canvas.height !== pixels) {
+        canvas.width = pixels;
+        canvas.height = pixels;
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, size, size);
+      const track = trackRef.current;
+      drawMinimap(ctx, activeSystem(game.systemId), size, {
+        time: game.elapsed,
+        ship: { x: game.ship.x, y: game.ship.y, angle: game.ship.angle },
+        range: scopeRange || autoScope(game, track),
+        targetId: game.targetId,
+        track: track?.points ?? [],
+        impact: track?.threat?.at ?? null,
+        critical: hazardAlert(game, track)?.level === "critical",
+        debris: game.debris,
+        pickups: game.pickups,
+      });
+    };
+
     const loop = (now: number) => {
       const dt = Math.min(0.034, Math.max(0, (now - last) / 1000));
       last = now;
@@ -2378,6 +2591,7 @@ export default function EmberlineGame() {
       update(game, dt);
       const dims = resize();
       draw(game, dims);
+      paintScope(game);
       uiTimerRef.current += dt;
       if (uiTimerRef.current > 0.12) {
         uiTimerRef.current = 0;
@@ -2387,7 +2601,7 @@ export default function EmberlineGame() {
     };
     frame = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(frame);
-  }, [audio, helpOpen, mapOpen, muted, notify, screen, undock]);
+  }, [audio, helpOpen, mapOpen, muted, notify, screen, scopeRange, undock]);
 
   const system = activeSystem(ui.systemId);
   const docked = stationById(system, ui.dockedId);
@@ -2543,6 +2757,42 @@ export default function EmberlineGame() {
 
   const radioToast = ui.message && gameRef.current.elapsed < gameRef.current.messageUntil && <div className="radio-toast"><span>PILGRIM NET</span><p>{ui.message}</p></div>;
 
+  /*
+   * The scope. One plate of local space with the ship at its centre, painted
+   * by the flight loop rather than by React so it moves with the window
+   * rather than with the panels. It is only up while the ship is off a pad:
+   * berthed, there is nothing to be near.
+   */
+  const scope = !docked && (
+    <aside className="scope" aria-label="Proximity scope">
+      <canvas ref={minimapRef} className="scope-plate" aria-hidden="true" />
+      <button
+        type="button"
+        className="scope-range"
+        onClick={cycleScope}
+        aria-label={`Scope range: ${scopeRange ? `${rangeLabel(scopeRange)} kilometres` : "automatic"}. Change`}
+      >
+        <span>{scopeRange ? rangeLabel(scopeRange) : "AUTO"}</span><kbd>N</kbd>
+      </button>
+    </aside>
+  );
+
+  /*
+   * The strip. It says the four things a pilot can act on — what, when, how
+   * fast, and the one control that answers it — and nothing else. Silent
+   * unless there is a contact coming that this hull would actually be
+   * charged for, and that it is nearly out of time to fly around.
+   */
+  const hazardStrip = !docked && ui.alert && (
+    <div className={`hazard-strip ${ui.alert.level}`} role={ui.alert.level === "critical" ? "alert" : "status"}>
+      <span className="hazard-kicker">{ui.alert.level === "critical" ? "COLLISION" : "PROXIMITY"}</span>
+      <b>{ui.alert.what}</b>
+      <span className="hazard-count">{ui.alert.time.toFixed(1)}s</span>
+      <span className="hazard-speed">{Math.round(ui.alert.speed)} m/s</span>
+      <em>{ui.alert.action}</em>
+    </div>
+  );
+
   return (
     <main className={`game-shell ${screen === "title" ? "is-title" : "is-playing"} ${mobile ? "is-cockpit" : ""} ${docked ? "is-docked" : ""}`}>
       <canvas ref={canvasRef} className="space-canvas" aria-label="The Cinder star system flight view" />
@@ -2626,6 +2876,8 @@ export default function EmberlineGame() {
                 )}
               </div>
             )}
+            {hazardStrip}
+            {scope}
             {openDrawer && (
               <div className={`hud-drawer ${openDrawer}`}>
                 <div className="panel-kicker">
@@ -2692,6 +2944,8 @@ export default function EmberlineGame() {
             <div className="mission-detail">{missionDetail}</div>
           </aside>
 
+          {hazardStrip}
+
           <aside className="telemetry-card plate">
             <div className="velocity-readout"><span>SPEED</span><strong>{Math.round(ui.speed)}</strong><small>m/s</small></div>
             <div className="telemetry-row"><span>RANGE TO {target.callSign}</span><b>{Math.round(ui.distance)} km</b></div>
@@ -2702,6 +2956,8 @@ export default function EmberlineGame() {
             <button className={`assist-toggle ${ui.assist ? "active" : ""}`} onClick={toggleAssist}><span className="status-light" /> FLIGHT ASSIST {ui.assist ? "ON" : "OFF"} <kbd>F</kbd></button>
             {!ui.dockedId && ui.fuel < 9 && <button className="tow-button" onClick={emergencyTow}>Request rescue tow · {money(TOW_FEE)}</button>}
           </aside>
+
+          {scope}
 
           {dockPanel}
 
@@ -2747,11 +3003,11 @@ export default function EmberlineGame() {
           <div className="guide-grid">
             <article><span>01</span><h3>Take local work</h3><p>While docked, choose a manifest from the contract board. Repeated routes gradually pay less as local demand is met. Every manifest with a bonus window also carries a hard deadline well beyond it — miss that and the contract voids, but freight already aboard survives as marked-down salvage rather than being lost outright. Nobody dies out here — they go broke. A tow or a written-off hull is billed whether you can cover it or not, and an overdrawn account is held to small work until you fly it back.</p></article>
             <article><span>02</span><h3>Secure the load</h3><p>Release the berth, drift within 92 m of each staged unit, match its speed, then press <kbd>SPACE</kbd>. Staged freight rides its pad around with the port. Cargo changes mass and handling — and fragile freight cannot take the main drive the way sturdier cargo can. A retro pair burns gently enough to slow a fragile load without marking it; a stock hull has to coast instead. The manifest card shows condition as you fly; arrive below half strength and the destination refuses the load outright, penalty included.</p></article>
-            <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward and <kbd>A</kbd>/<kbd>D</kbd> rotate. A stock hull only burns forward — turn the nose against your vector to slow down. A fitted retro pair adds <kbd>S</kbd> reverse, <kbd>Q</kbd>/<kbd>E</kbd> strafe and <kbd>SHIFT</kbd> assisted braking. The teal line is your true velocity. Burn, coast, flip, brake — a loaded round trip costs most of a tank, so the coast is free and the burn is not. Aim where the beacon is going, not where it sits.</p></article>
-            <article><span>04</span><h3>Make a clean arrival</h3><p>Ports orbit, and their worlds orbit too, so an arrival is a rendezvous with the sum of both. <b>CLOSING</b> on the panel is your speed relative to the pad, and it has to be under 36 m/s to clamp — matching a port’s motion matters more than stopping, and a port on the fast inner world is the hardest to come alongside. Structure is solid: contact above 18 m/s costs hull, above 55 m/s it tears a container off the spine.</p></article>
-            <article><span>05</span><h3>Respect the deck</h3><p>The red ring is a surface and it is solid. The dashed ring above it is atmosphere: drag and heat, survivable briefly, useful for shedding speed. Loaded, you cannot climb straight out of a deep well. Cinder itself carries the same rings and nothing forgiving inside them.</p></article>
-            <article><span>06</span><h3>Work The Wake</h3><p>A slow debris field keeps station with Rayleigh, trailing it around the same lane, and it is solid — the same closing-speed rule that governs a station or a planet governs it. A scanner shows it from 520 units out instead of 215; without one, flying in fast is a gamble. Salvage pays well, and something worth more sits deep in the field.</p></article>
-            <article><span>07</span><h3>Catch the Emberline</h3><p>A line gate sits out past the lanes, with a swept road running straight away from the star. To leave the system you have to be in that road, clear of every well, tracking down it within a few degrees and above its threshold speed — and hold all four for a stretch. The panel lists them; the spool only fills while every line is green. A knock breaks it outright, a wobble only bleeds it. Loaded, reaching threshold at all is most of the work, which is the point: a full hauler cannot simply decide to leave.</p></article>
+            <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward and <kbd>A</kbd>/<kbd>D</kbd> rotate. A stock hull only burns forward — turn the nose against your vector to slow down. A fitted retro pair adds <kbd>S</kbd> reverse, <kbd>Q</kbd>/<kbd>E</kbd> strafe and <kbd>SHIFT</kbd> assisted braking. The teal line running off the nose is your track — where the ship goes if you touch nothing. Burn, coast, flip, brake — a loaded round trip costs most of a tank, so the coast is free and the burn is not. Aim where the beacon is going, not where it sits.</p></article>
+            <article><span>04</span><h3>Look further than the window</h3><p>The scope in the corner is local space at true scale, ship at the centre, north up: decks in oxide, ports as diamonds, a debris field as the chunks actually in it. Across it runs your track — where the ship goes if you touch nothing — and it bends, because gravity is in it. <kbd>N</kbd> steps the range, or leave it on <b>AUTO</b> and it holds about nine seconds of travel. When that track ends on something solid the point is marked with a countdown, and the net calls it out with the one control that answers it. It waits until the lead time <em>your</em> hull needs is nearly spent — a loaded Atlas is warned much earlier than an empty Kestrel, because it takes far longer to stop. Contact under 18 m/s is free, so a clean arrival is never announced.</p></article><article><span>05</span><h3>Make a clean arrival</h3><p>Ports orbit, and their worlds orbit too, so an arrival is a rendezvous with the sum of both. <b>CLOSING</b> on the panel is your speed relative to the pad, and it has to be under 36 m/s to clamp — matching a port’s motion matters more than stopping, and a port on the fast inner world is the hardest to come alongside. Structure is solid: contact above 18 m/s costs hull, above 55 m/s it tears a container off the spine.</p></article>
+            <article><span>06</span><h3>Respect the deck</h3><p>The red ring is a surface and it is solid. The dashed ring above it is atmosphere: drag and heat, survivable briefly, useful for shedding speed. Loaded, you cannot climb straight out of a deep well. Cinder itself carries the same rings and nothing forgiving inside them.</p></article>
+            <article><span>07</span><h3>Work The Wake</h3><p>A slow debris field keeps station with Rayleigh, trailing it around the same lane, and it is solid — the same closing-speed rule that governs a station or a planet governs it. A scanner shows it from 520 units out instead of 215; without one, flying in fast is a gamble. Salvage pays well, and something worth more sits deep in the field.</p></article>
+            <article><span>08</span><h3>Catch the Emberline</h3><p>A line gate sits out past the lanes, with a swept road running straight away from the star. To leave the system you have to be in that road, clear of every well, tracking down it within a few degrees and above its threshold speed — and hold all four for a stretch. The panel lists them; the spool only fills while every line is green. A knock breaks it outright, a wobble only bleeds it. Loaded, reaching threshold at all is most of the work, which is the point: a full hauler cannot simply decide to leave.</p></article>
           </div>
           <button className="primary-button" onClick={() => setHelpOpen(false)}>Return to the flight deck <span>→</span></button>
         </section>
