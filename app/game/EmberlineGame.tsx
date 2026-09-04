@@ -463,6 +463,8 @@ export default function EmberlineGame() {
   const [screen, setScreen] = useState<"title" | "game">("title");
   const [ui, setUi] = useState<UiSnapshot>(() => snapshot(gameRef.current));
   const [panel, setPanel] = useState<"contracts" | "service" | "fleet">("contracts");
+  /** Collapses the mission card to a one-line strip. Only has a visual effect on narrow (mobile) layouts. */
+  const [missionCollapsed, setMissionCollapsed] = useState(true);
   const [mapOpen, setMapOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -1311,31 +1313,51 @@ export default function EmberlineGame() {
             </nav>
           </header>
 
-          <aside className="mission-card plate">
-            <div className="panel-kicker">{active ? "ACTIVE MANIFEST" : "OPEN SHIFT"}<span className={`stamp ${active?.kind === "cryogenic" ? "cold" : ""}`}>{active?.kind ?? "self-directed"}</span></div>
-            {active ? (
-              <>
-                <h2>{active.title}</h2>
-                <p>{active.description}</p>
-                <div className="manifest-line">
-                  <CargoPortrait kind={active.cargo} count={active.quantity} />
-                  <div><b>{CARGO[active.cargo].name}</b>{CARGO[active.cargo].short} × {active.quantity} · {CARGO[active.cargo].mass * active.quantity} t</div>
-                </div>
-                <div className="route-line"><span>{stationById(active.origin)?.callSign}</span><i /><span>{stationById(active.destination)?.callSign}</span></div>
-                <div className="objective">
-                  <small>NEXT ACTION</small>
-                  <strong>{ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(active.destination)?.name}`}</strong>
-                </div>
-                {active.timeLimit && <div className={`timer ${ui.contractTime < 30 ? "urgent" : ""}`}><span>TIME BONUS</span><b>{seconds(ui.contractTime)}</b></div>}
-                <button className="text-button danger" onClick={abandonContract}>Abandon contract</button>
-              </>
-            ) : (
-              <>
-                <h2>Choose your next line</h2>
-                <p>Dock at a station to review local work, or set a course for The Wake and hunt salvage.</p>
-                <button className="text-button" onClick={() => setMapOpen(true)}>Open system chart →</button>
-              </>
-            )}
+          <aside className={`mission-card plate ${missionCollapsed ? "collapsed" : ""}`}>
+            <div className="panel-kicker">
+              <span>{active ? "ACTIVE MANIFEST" : "OPEN SHIFT"}</span>
+              <span className="panel-kicker-tools">
+                <span className={`stamp ${active?.kind === "cryogenic" ? "cold" : ""}`}>{active?.kind ?? "self-directed"}</span>
+                <button
+                  type="button"
+                  className="mission-toggle"
+                  onClick={() => setMissionCollapsed((value) => !value)}
+                  aria-expanded={!missionCollapsed}
+                  aria-label={missionCollapsed ? "Expand active manifest" : "Collapse active manifest"}
+                >
+                  {missionCollapsed ? "▾" : "▴"}
+                </button>
+              </span>
+            </div>
+            <button type="button" className="mission-summary" onClick={() => setMissionCollapsed(false)}>
+              <b>{active ? active.title : "Choose your next line"}</b>
+              <span>{active ? (ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(active.destination)?.callSign}`) : "Open system chart →"}</span>
+            </button>
+            <div className="mission-detail">
+              {active ? (
+                <>
+                  <h2>{active.title}</h2>
+                  <p>{active.description}</p>
+                  <div className="manifest-line">
+                    <CargoPortrait kind={active.cargo} count={active.quantity} />
+                    <div><b>{CARGO[active.cargo].name}</b>{CARGO[active.cargo].short} × {active.quantity} · {CARGO[active.cargo].mass * active.quantity} t</div>
+                  </div>
+                  <div className="route-line"><span>{stationById(active.origin)?.callSign}</span><i /><span>{stationById(active.destination)?.callSign}</span></div>
+                  <div className="objective">
+                    <small>NEXT ACTION</small>
+                    <strong>{ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(active.destination)?.name}`}</strong>
+                  </div>
+                  {active.timeLimit && <div className={`timer ${ui.contractTime < 30 ? "urgent" : ""}`}><span>TIME BONUS</span><b>{seconds(ui.contractTime)}</b></div>}
+                  <button className="text-button danger" onClick={abandonContract}>Abandon contract</button>
+                </>
+              ) : (
+                <>
+                  <h2>Choose your next line</h2>
+                  <p>Dock at a station to review local work, or set a course for The Wake and hunt salvage.</p>
+                  <button className="text-button" onClick={() => setMapOpen(true)}>Open system chart →</button>
+                </>
+              )}
+            </div>
           </aside>
 
           <aside className="telemetry-card plate">
