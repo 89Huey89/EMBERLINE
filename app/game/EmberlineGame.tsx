@@ -11,9 +11,9 @@ import {
   UPGRADES,
   WORLD,
 } from "./data";
-import type { CargoKind, ContractDefinition, ShipDefinition, Station } from "./types";
+import type { CargoKind, CelestialBody, ContractDefinition, ShipDefinition, Station } from "./types";
 import { drawCargoUnit } from "./art/cargo";
-import { drawPlanet, planetParallax } from "./art/planets";
+import { drawPlanet, planetParallax, PLANET_SCALE } from "./art/planets";
 import { drawShipPortrait, shipArtFor } from "./art/ships";
 import { berthPoint, drawStation } from "./art/stations";
 
@@ -382,7 +382,12 @@ function useAudio() {
   return useMemo(() => ({ ensure, setEngine, tone, mute }), [ensure, mute, setEngine, tone]);
 }
 
-function ShipPortrait({ ship }: { ship: ShipDefinition }) {
+/**
+ * A canvas sized to its CSS box that repaints with `paint` whenever `deps`
+ * change. The menus use it to show the same drawings that fly: ships on the
+ * shipyard cards, cargo on the manifests, planets on the chart.
+ */
+function usePortrait(paint: (ctx: CanvasRenderingContext2D, width: number, height: number) => void, deps: unknown[]) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const canvas = ref.current;
@@ -396,9 +401,43 @@ function ShipPortrait({ ship }: { ship: ShipDefinition }) {
     canvas.height = Math.round(height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
-    drawShipPortrait(ctx, ship, width, height);
-  }, [ship]);
-  return <canvas ref={ref} className="ship-portrait" aria-hidden="true" />;
+    paint(ctx, width, height);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  return ref;
+}
+
+function ShipPortrait({ ship }: { ship: ShipDefinition }) {
+  const ref = usePortrait((ctx, width, height) => drawShipPortrait(ctx, ship, width, height), [ship]);
+  return <canvas ref={ref} className="ship-portrait portrait" aria-hidden="true" />;
+}
+
+/** The units on a manifest, laid side by side the way they sit on a spine. */
+function CargoPortrait({ kind, count = 1, condition = 1 }: { kind: CargoKind; count?: number; condition?: number }) {
+  const ref = usePortrait((ctx, width, height) => {
+    const units = Math.max(1, Math.min(4, count));
+    const pitch = 34;
+    const size = Math.min((width - 6) / (units * pitch), (height - 6) / 24);
+    ctx.translate(width / 2 - ((units - 1) / 2) * pitch * size, height / 2);
+    for (let index = 0; index < units; index += 1) {
+      ctx.save();
+      ctx.translate(index * pitch * size, 0);
+      drawCargoUnit(ctx, kind, { size, condition, time: 0 });
+      ctx.restore();
+    }
+  }, [kind, count, condition]);
+  return <canvas ref={ref} className="cargo-portrait portrait" aria-hidden="true" />;
+}
+
+/** A body from the flight view, fitted into a square with its atmosphere. */
+function PlanetPortrait({ body }: { body: CelestialBody }) {
+  const ref = usePortrait((ctx, width, height) => {
+    const fit = Math.min(width, height) / 2 / (body.radius * PLANET_SCALE * 1.18);
+    ctx.translate(width / 2, height / 2);
+    ctx.scale(fit, fit);
+    drawPlanet(ctx, body, { time: 1, zoom: fit });
+  }, [body]);
+  return <canvas ref={ref} className="map-planet portrait" aria-hidden="true" />;
 }
 
 export default function EmberlineGame() {
@@ -1187,6 +1226,7 @@ export default function EmberlineGame() {
             <p className="eyebrow"><span>INDEPENDENT OPERATOR LICENSE 07</span><span>CINDER SYSTEM</span></p>
             <h1 id="game-title">EMBERLINE</h1>
             <p className="subtitle">Civilian orbital freight</p>
+            <div className="title-rule" aria-hidden="true" />
             <p className="intro">There are no heroes on the manifest. Only mass, momentum, and the quiet satisfaction of bringing a difficult load home.</p>
             <div className="title-actions">
               <button className="primary-button" onClick={() => start(false)}>Begin a new shift <span>→</span></button>
@@ -1218,12 +1258,16 @@ export default function EmberlineGame() {
             </nav>
           </header>
 
-          <aside className="mission-card">
-            <div className="panel-kicker">{active ? "ACTIVE MANIFEST" : "OPEN SHIFT"}<span>{active?.kind.toUpperCase() ?? "SELF-DIRECTED"}</span></div>
+          <aside className="mission-card plate">
+            <div className="panel-kicker">{active ? "ACTIVE MANIFEST" : "OPEN SHIFT"}<span className={`stamp ${active?.kind === "cryogenic" ? "cold" : ""}`}>{active?.kind ?? "self-directed"}</span></div>
             {active ? (
               <>
                 <h2>{active.title}</h2>
-                <p>{CARGO[active.cargo].name} · {active.quantity} unit{active.quantity > 1 ? "s" : ""}</p>
+                <p>{active.description}</p>
+                <div className="manifest-line">
+                  <CargoPortrait kind={active.cargo} count={active.quantity} />
+                  <div><b>{CARGO[active.cargo].name}</b>{CARGO[active.cargo].short} × {active.quantity} · {CARGO[active.cargo].mass * active.quantity} t</div>
+                </div>
                 <div className="route-line"><span>{stationById(active.origin)?.callSign}</span><i /><span>{stationById(active.destination)?.callSign}</span></div>
                 <div className="objective">
                   <small>NEXT ACTION</small>
@@ -1241,7 +1285,7 @@ export default function EmberlineGame() {
             )}
           </aside>
 
-          <aside className="telemetry-card">
+          <aside className="telemetry-card plate">
             <div className="velocity-readout"><span>SPEED</span><strong>{Math.round(ui.speed)}</strong><small>m/s</small></div>
             <div className="telemetry-row"><span>RANGE TO {target.callSign}</span><b>{Math.round(ui.distance)} km</b></div>
             <div className="bar-row"><span>PROPELLANT</span><div className="meter"><i style={{ width: `${clamp(ui.fuel / fuelCapacity * 100, 0, 100)}%` }} /></div><b>{Math.round(ui.fuel)}</b></div>
@@ -1252,9 +1296,15 @@ export default function EmberlineGame() {
           </aside>
 
           {docked && (
-            <section className="dock-panel">
+            <section className="dock-panel plate">
               <div className="dock-heading">
-                <div><span>BERTHED AT {docked.callSign}</span><h2>{docked.name}</h2><p>{docked.description}</p></div>
+                <div>
+                  <span>BERTHED AT {docked.callSign}</span>
+                  <h2>{docked.name}</h2>
+                  <small className="kind">{docked.kind}</small>
+                  <p>{docked.description}</p>
+                  <div className="services">{docked.services.map((item) => <span className="tag" key={item}>{item}</span>)}</div>
+                </div>
                 <button className="primary-button compact" onClick={undock}>Release berth <span>→</span></button>
               </div>
               <div className="dock-tabs" role="tablist">
@@ -1268,13 +1318,17 @@ export default function EmberlineGame() {
                     {contractsHere.map((contract) => {
                       const reward = rewardFor(contract, gameRef.current.routeRuns);
                       const locked = ui.reputation < contract.minReputation || Boolean(contract.requiredShip && contract.requiredShip !== ui.shipId) || (contract.kind === "cryogenic" && !ui.upgrades.includes("cryo")) || (contract.minSlots ?? contract.quantity) > currentShip.slots + (ui.upgrades.includes("clamps") ? 1 : 0);
+                      const cargo = CARGO[contract.cargo];
                       return (
-                        <article className={`contract ${locked ? "locked" : ""}`} key={contract.id}>
-                          <div className="contract-top"><span>{contract.kind.toUpperCase()}</span><b>{money(reward)}</b></div>
-                          <h3>{contract.title}</h3>
-                          <p>{contract.description}</p>
-                          <div className="manifest"><span>{CARGO[contract.cargo].short} × {contract.quantity}</span><span>{CARGO[contract.cargo].mass * contract.quantity} t</span><span>→ {stationById(contract.destination)?.callSign}</span></div>
-                          {locked ? <small className="requirement">Requires rep {contract.minReputation}{contract.requiredShip ? ` · ${shipById(contract.requiredShip).name}` : ""}{contract.kind === "cryogenic" ? " · Cryo umbilical" : ""}</small> : <button disabled={Boolean(ui.activeContractId)} onClick={() => stageContract(contract)}>Accept manifest</button>}
+                        <article className={`contract ${locked ? "locked" : ""}`} key={contract.id} style={{ "--accent": cargo.accent } as React.CSSProperties}>
+                          <div className="contract-top"><span className={`stamp ${contract.kind === "cryogenic" ? "cold" : ""}`}>{contract.kind}</span><b>{money(reward)}</b></div>
+                          <div className="contract-body">
+                            <div><h3>{contract.title}</h3><p>{contract.description}</p></div>
+                            <CargoPortrait kind={contract.cargo} count={contract.quantity} />
+                          </div>
+                          <div className="manifest"><span>{cargo.short} × {contract.quantity}</span><span>{cargo.mass * contract.quantity} t</span><span>{stationById(contract.origin)?.callSign} → {stationById(contract.destination)?.callSign}</span>{contract.timeLimit && <span>{seconds(contract.timeLimit)} bonus window</span>}</div>
+                          <div className="tear" aria-hidden="true" />
+                          {locked ? <small className="requirement">Requires rep {contract.minReputation}{contract.requiredShip ? ` · ${shipById(contract.requiredShip).name}` : ""}{contract.kind === "cryogenic" ? " · Cryo umbilical" : ""}{(contract.minSlots ?? contract.quantity) > currentShip.slots + (ui.upgrades.includes("clamps") ? 1 : 0) ? ` · ${contract.minSlots ?? contract.quantity} clamps` : ""}</small> : <button disabled={Boolean(ui.activeContractId)} onClick={() => stageContract(contract)}>Accept manifest</button>}
                         </article>
                       );
                     })}
@@ -1285,7 +1339,7 @@ export default function EmberlineGame() {
                     <article><span>PROPELLANT</span><h3>{Math.round(ui.fuel)} / {Math.round(fuelCapacity)}</h3><p>Refined monopropellant, metered at this port’s posted rate.</p><button onClick={() => service("fuel")}>Fill tanks · {money(Math.ceil((fuelCapacity - ui.fuel) * 4))}</button></article>
                     <article><span>HULL & RIGGING</span><h3>{Math.round(ui.hull)}% integrity</h3><p>Pressure shell, radiator, clamp, and RCS inspection.</p><button onClick={() => service("repair")}>Authorize work · {money(Math.ceil((100 - ui.hull) * 18))}</button></article>
                     {UPGRADES.map((upgrade) => (
-                      <article className={!docked.services.includes("upgrades") ? "locked" : ""} key={upgrade.id}><span>{ui.upgrades.includes(upgrade.id) ? "INSTALLED" : "SHIP REFIT"}</span><h3>{upgrade.name}</h3><p>{upgrade.description}</p>{ui.upgrades.includes(upgrade.id) ? <small className="installed">Hardware fitted</small> : <button disabled={!docked.services.includes("upgrades")} onClick={() => buyUpgrade(upgrade.id)}>Install · {money(upgrade.cost)}</button>}</article>
+                      <article className={`${!docked.services.includes("upgrades") ? "locked" : ""} ${ui.upgrades.includes(upgrade.id) ? "fitted" : ""}`} key={upgrade.id}><span>{ui.upgrades.includes(upgrade.id) ? "INSTALLED" : "SHIP REFIT"}</span><h3>{upgrade.name}</h3><p>{upgrade.description}</p>{ui.upgrades.includes(upgrade.id) ? <small className="installed">Hardware fitted</small> : <button disabled={!docked.services.includes("upgrades")} onClick={() => buyUpgrade(upgrade.id)}>Install · {money(upgrade.cost)}</button>}</article>
                     ))}
                   </div>
                 )}
@@ -1302,7 +1356,7 @@ export default function EmberlineGame() {
           )}
 
           {!docked && (
-            <div className="flight-controls" aria-label="Flight controls">
+            <div className="flight-controls plate" aria-label="Flight controls">
               <div><kbd>A</kbd><kbd>D</kbd><span>ROTATE</span></div>
               <div><kbd>Q</kbd><kbd>E</kbd><span>STRAFE</span></div>
               <div><kbd>W</kbd><span>MAIN DRIVE</span></div>
@@ -1327,12 +1381,12 @@ export default function EmberlineGame() {
       )}
 
       {mapOpen && (
-        <section className="modal map-modal" role="dialog" aria-modal="true" aria-labelledby="map-title">
+        <section className="modal map-modal plate" role="dialog" aria-modal="true" aria-labelledby="map-title">
           <button className="modal-close" onClick={() => setMapOpen(false)}>Close <kbd>ESC</kbd></button>
           <div className="map-copy"><p className="eyebrow">COMPRESSED NAVIGATION CHART / NOT TO SCALE</p><h2 id="map-title">The Cinder system</h2><p>Learn the working lines. Mine to refinery, refinery to shipyard, ice moon to habitat. The best route is the one your current ship can fly cleanly.</p></div>
           <div className="system-map">
             <div className="orbit orbit-one" /><div className="orbit orbit-two" />
-            {BODIES.map((body) => <div className={`map-body ${body.id}`} key={body.id}><i /><span>{body.name.toUpperCase()}</span></div>)}
+            {BODIES.map((body) => <div className={`map-body ${body.id}`} key={body.id}><PlanetPortrait body={body} /><span>{body.name.toUpperCase()}<small>{body.kind}</small></span></div>)}
             <div className="wake-zone"><i />THE WAKE</div>
             {STATIONS.map((station) => <button key={station.id} className={`map-station station-${station.id} ${station.id === ui.targetId ? "active" : ""}`} onClick={() => setTarget(station.id)}><i /><b>{station.callSign}</b><span>{station.name}</span></button>)}
           </div>
@@ -1341,7 +1395,7 @@ export default function EmberlineGame() {
       )}
 
       {helpOpen && (
-        <section className="modal guide-modal" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+        <section className="modal guide-modal plate" role="dialog" aria-modal="true" aria-labelledby="guide-title">
           <button className="modal-close" onClick={() => setHelpOpen(false)}>Close <kbd>ESC</kbd></button>
           <div className="guide-heading"><p className="eyebrow">KESTREL U-3 / QUICK REFERENCE</p><h2 id="guide-title">Momentum is the road.</h2><p>Thrust changes velocity. Releasing the controls does not stop the ship. Turn early, brake earlier, and arrive slowly.</p></div>
           <div className="guide-grid">
