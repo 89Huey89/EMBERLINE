@@ -1443,7 +1443,16 @@ export default function EmberlineGame() {
 
           {!docked && (
             <div className="touch-controls" aria-label="Touch flight controls" onContextMenu={(event) => event.preventDefault()}>
-              <div><button onPointerDown={() => setTouch("a", true)} onPointerUp={() => setTouch("a", false)} onPointerLeave={() => setTouch("a", false)}>↺</button><button onPointerDown={() => setTouch("d", true)} onPointerUp={() => setTouch("d", false)} onPointerLeave={() => setTouch("d", false)}>↻</button></div>
+              <div className="touch-cluster">
+                <div className="touch-row">
+                  <button onPointerDown={() => setTouch("a", true)} onPointerUp={() => setTouch("a", false)} onPointerLeave={() => setTouch("a", false)}>↺</button>
+                  <button onPointerDown={() => setTouch("d", true)} onPointerUp={() => setTouch("d", false)} onPointerLeave={() => setTouch("d", false)}>↻</button>
+                </div>
+                <div className="touch-row">
+                  <button disabled={!retroFitted} onPointerDown={() => setTouch("q", true)} onPointerUp={() => setTouch("q", false)} onPointerLeave={() => setTouch("q", false)}>◀</button>
+                  <button disabled={!retroFitted} onPointerDown={() => setTouch("e", true)} onPointerUp={() => setTouch("e", false)} onPointerLeave={() => setTouch("e", false)}>▶</button>
+                </div>
+              </div>
               <button className="touch-thrust" onPointerDown={() => setTouch("w", true)} onPointerUp={() => setTouch("w", false)} onPointerLeave={() => setTouch("w", false)}>THRUST</button>
               <button disabled={!retroFitted} onPointerDown={() => setTouch("shift", true)} onPointerUp={() => setTouch("shift", false)} onPointerLeave={() => setTouch("shift", false)}>BRAKE</button>
               <button onClick={() => { actionRequestRef.current = true; }}>CLAMP</button>
