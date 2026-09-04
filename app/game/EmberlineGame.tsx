@@ -449,6 +449,7 @@ export default function EmberlineGame() {
   const actionRequestRef = useRef(false);
   const salvageSeededRef = useRef(false);
   const cameraRef = useRef({ x: -320, y: 30, zoom: 0.78 });
+  const dockPanelRef = useRef<HTMLElement>(null);
   const titlePoseRef = useRef<ShipPose | null>(null);
   const starRef = useRef(Array.from({ length: 340 }, (_, index) => ({
     x: ((index * 1877) % 10000) / 10000,
@@ -973,7 +974,9 @@ export default function EmberlineGame() {
         canvas.width = width;
         canvas.height = height;
       }
-      return { width: rect.width, height: rect.height, dpr };
+      const panel = dockPanelRef.current;
+      const viewHeight = panel ? Math.max(120, panel.getBoundingClientRect().top - rect.top) : rect.height;
+      return { width: rect.width, height: rect.height, dpr, viewHeight };
     };
 
     const drawCargo = (ctx: CanvasRenderingContext2D, kind: CargoKind, size = 1, condition = 1) => {
@@ -1017,8 +1020,8 @@ export default function EmberlineGame() {
       ctx.restore();
     };
 
-    const draw = (game: GameMutable, dims: { width: number; height: number; dpr: number }) => {
-      const { width, height, dpr } = dims;
+    const draw = (game: GameMutable, dims: { width: number; height: number; dpr: number; viewHeight: number }) => {
+      const { width, height, dpr, viewHeight } = dims;
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       context.clearRect(0, 0, width, height);
       const bg = context.createRadialGradient(width * 0.7, height * 0.25, 0, width * 0.5, height * 0.5, width);
@@ -1056,7 +1059,7 @@ export default function EmberlineGame() {
       });
 
       context.save();
-      context.translate(width / 2 + shakeX, height / 2 + shakeY);
+      context.translate(width / 2 + shakeX, viewHeight / 2 + shakeY);
       context.scale(cam.zoom, cam.zoom);
       context.translate(-cam.x, -cam.y);
 
@@ -1296,7 +1299,7 @@ export default function EmberlineGame() {
           </aside>
 
           {docked && (
-            <section className="dock-panel plate">
+            <section className="dock-panel plate" ref={dockPanelRef}>
               <div className="dock-heading">
                 <div>
                   <span>BERTHED AT {docked.callSign}</span>
