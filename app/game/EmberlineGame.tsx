@@ -91,6 +91,78 @@ const GRAVITY_CAP = 16;
 const GRAVITY_FULL = 2.2;
 const GRAVITY_REACH = 2.75;
 
+/* ------------------------------------------------------------------ */
+/* Freight condition                                                    */
+/*                                                                      */
+/* Two failure modes for a load in flight, not one. Fragile freight     */
+/* cannot tolerate ordinary piloting — it wants the brake favored over   */
+/* the throttle even on a light ship — while everything else shrugs off */
+/* anything short of numbers a loaded ship ordinarily never produces.   */
+/* A load that arrives too far gone is not merely worth less: the       */
+/* destination refuses it outright, the same way a real consignee would */
+/* turn away a shipment that failed inspection on the dock.             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Acceleration, m/s², above which a FRAGILE load starts taking damage.
+ *
+ * Ships make 13-19 m/s² empty and about 10 loaded (see WORLD in data.ts),
+ * so the threshold has to sit under the loaded floor or fragile freight
+ * would never wear in ordinary flight. 9 does that: the retro burn a
+ * loaded ship uses to slow down stays under it, but the main drive does
+ * not, so flying a fragile contract well means favoring the brake over
+ * the throttle rather than avoiding thrust altogether.
+ */
+const FRAGILE_LOAD_THRESHOLD = 9;
+/**
+ * Condition lost per second per m/s² of acceleration over the threshold.
+ *
+ * Calibrated against the three ways a pilot actually flies a ~5000 unit run
+ * with one fragile unit aboard, where the main drive makes 15.5 m/s²:
+ * holding the throttle down the whole way (36 s of burn) arrives at 0.42 and
+ * is refused; flipping and burning both ways (24 s) arrives at 0.61 and is
+ * paid at 61%; coasting and shedding speed on the retro, which sits under
+ * the threshold, arrives at 0.87. Refusal is reserved for carelessness, and
+ * the ordinary middle case costs money rather than the whole contract.
+ */
+const FRAGILE_WEAR_RATE = 0.0025;
+/**
+ * Acceleration threshold for ordinary freight.
+ *
+ * Set above what a loaded ship ordinarily produces, so it only bites an
+ * empty-ish courier run at full thrust. Ordinary cargo is meant to take
+ * its wear from contact, not from being flown competently.
+ */
+const ORDINARY_LOAD_THRESHOLD = 16;
+/** Ordinary wear accrues at well under half the fragile rate. */
+const ORDINARY_WEAR_RATE = 0.0015;
+/** Average condition below which a destination refuses the manifest outright. */
+const CONDITION_REJECT_THRESHOLD = 0.55;
+/** Cut of the base reward charged when a load is refused for condition. */
+const REJECTION_PENALTY_FRACTION = 0.4;
+
+/* ------------------------------------------------------------------ */
+/* Contract deadlines                                                   */
+/*                                                                      */
+/* timeLimit remains exactly what it always was: the bonus window. What */
+/* is new is the hard stop beyond it, set wide enough that every        */
+/* contract in the book is comfortably flyable — the tightest window in */
+/* the system is elx-quiet's 92 s, against a typical loaded run of      */
+/* 40-60 s — so missing it takes real inattention, not a slow ship. A   */
+/* blown deadline is not a wreck: the freight already aboard survives   */
+/* as salvage, worth less and sellable anywhere, but the manifest and   */
+/* its full reward are gone.                                            */
+/* ------------------------------------------------------------------ */
+
+/** The hard deadline, as a multiple of the bonus window. */
+const DEADLINE_MULTIPLIER = 2.5;
+/** Cut of the base reward charged when a contract is voided by its deadline. */
+const DEADLINE_PENALTY_FRACTION = 0.3;
+/** Seconds ahead of the hard deadline that the net starts warning about it. */
+const DEADLINE_WARNING_WINDOW = 20;
+/** What expired contract freight is worth once downgraded to ordinary salvage. */
+const EXPIRED_SALVAGE_VALUE_FRACTION = 0.5;
+
 type CargoItem = {
   id: string;
   kind: CargoKind;
@@ -149,6 +221,8 @@ type GameMutable = {
   targetId: string;
   activeContractId: string | null;
   contractTime: number;
+  /** Seconds left before the active contract's hard deadline voids it. */
+  contractDeadline: number;
   cargo: CargoItem[];
   pickups: Pickup[];
   particles: Particle[];
@@ -180,6 +254,7 @@ type UiSnapshot = {
   targetId: string;
   activeContractId: string | null;
   contractTime: number;
+  contractDeadline: number;
   assist: boolean;
   shipId: ShipDefinition["id"];
   upgrades: string[];
@@ -278,6 +353,7 @@ function freshGame(): GameMutable {
     targetId: STATIONS[1].id,
     activeContractId: null,
     contractTime: 0,
+    contractDeadline: 0,
     cargo: [],
     pickups: [],
     particles: [],
@@ -319,12 +395,21 @@ function safeLoad(): GameMutable | null {
       game.ship.vy = pose.vy;
     }
     const active = contractById(game.activeContractId);
-    const origin = stationById(active?.origin ?? null);
-    if (active && origin) {
-      /* Whatever was not clamped before the shift ended is back on its pad,
-         which is where the incomplete-manifest message already sends you. */
-      const alreadyLoaded = game.cargo.filter((item) => item.source === "contract").length;
-      game.pickups.push(...stagedPickups(active, origin, game.elapsed, alreadyLoaded));
+    if (active) {
+      /* An older save, or one from between saves, may carry no deadline or
+         a stale one. There is no way to know how long the contract has
+         actually been outstanding, so a restored shift gets the benefit
+         of the doubt: the full hard deadline, counted from now. */
+      if (active.timeLimit && game.contractDeadline <= 0) {
+        game.contractDeadline = active.timeLimit * DEADLINE_MULTIPLIER;
+      }
+      const origin = stationById(active.origin);
+      if (origin) {
+        /* Whatever was not clamped before the shift ended is back on its pad,
+           which is where the incomplete-manifest message already sends you. */
+        const alreadyLoaded = game.cargo.filter((item) => item.source === "contract").length;
+        game.pickups.push(...stagedPickups(active, origin, game.elapsed, alreadyLoaded));
+      }
     }
     return game;
   } catch {
@@ -384,6 +469,7 @@ function snapshot(game: GameMutable): UiSnapshot {
     targetId: game.targetId,
     activeContractId: game.activeContractId,
     contractTime: game.contractTime,
+    contractDeadline: game.contractDeadline,
     assist: game.assist,
     shipId: game.shipId,
     upgrades: [...game.upgrades],
@@ -626,6 +712,7 @@ export default function EmberlineGame() {
     const station = stationById(contract.origin)!;
     game.activeContractId = contract.id;
     game.contractTime = contract.timeLimit ?? 0;
+    game.contractDeadline = contract.timeLimit ? contract.timeLimit * DEADLINE_MULTIPLIER : 0;
     game.targetId = contract.destination;
     game.pickups = stagedPickups(contract, station, game.elapsed);
     audio.tone("ui", muted);
@@ -660,6 +747,7 @@ export default function EmberlineGame() {
     game.pickups = game.pickups.filter((item) => item.source !== "contract");
     game.activeContractId = null;
     game.contractTime = 0;
+    game.contractDeadline = 0;
     game.reputation = Math.max(0, game.reputation - 1);
     notify("Contract released. Dispatch records a small reputation loss.");
   }, [notify]);
@@ -733,6 +821,7 @@ export default function EmberlineGame() {
     game.pickups = [];
     game.activeContractId = null;
     game.contractTime = 0;
+    game.contractDeadline = 0;
     game.reputation = Math.max(0, game.reputation - 1);
     notify(`Pilgrim rescue tug recovered the vessel. ${money(cost)} billed; account stands at ${money(game.credits)}.`, 7);
   }, [notify]);
@@ -849,7 +938,11 @@ export default function EmberlineGame() {
         const salvagePay = Math.round(salvage.reduce((sum, item) => sum + item.value * item.condition, 0));
         game.credits += salvagePay;
         game.salvageRecovered += salvage.length;
-        game.reputation += salvage.some((item) => item.kind === "science") ? 2 : 1;
+        /* Only genuine recoveries earn standing. Freight marked down after a
+           missed deadline is sold at the same desk, and without this test a
+           failed science run would earn more standing than the miss cost. */
+        const recovered = salvage.filter((item) => item.id.startsWith("salvage-"));
+        if (recovered.length) game.reputation += recovered.some((item) => item.kind === "science") ? 2 : 1;
         game.cargo = game.cargo.filter((item) => item.source !== "salvage");
         note = `Salvage assessed: ${money(salvagePay)} credited.`;
       }
@@ -860,19 +953,32 @@ export default function EmberlineGame() {
         if (carried.length >= contract.quantity) {
           const base = rewardFor(contract, game.routeRuns);
           const condition = carried.reduce((sum, item) => sum + item.condition, 0) / carried.length;
-          const timeBonus = contract.timeLimit ? clamp(game.contractTime / contract.timeLimit, 0, 1) * 0.25 : 0;
-          const reward = Math.round(base * condition * (1 + timeBonus));
-          const route = `${contract.origin}-${contract.destination}`;
-          game.credits += reward;
-          game.reputation += condition > 0.92 ? 2 : 1;
-          game.completed += 1;
-          game.routeRuns[route] = (game.routeRuns[route] ?? 0) + 1;
+          /* A station inspects what shows up. Below CONDITION_REJECT_THRESHOLD
+             it will not sign for the load at any price — the reward already
+             scales with condition above that line, so refusal is the only
+             lever left for freight that arrived genuinely ruined. */
+          if (condition < CONDITION_REJECT_THRESHOLD) {
+            const penalty = Math.round(base * REJECTION_PENALTY_FRACTION);
+            game.credits -= penalty;
+            game.reputation = Math.max(0, game.reputation - 1);
+            audio.tone("impact", muted);
+            note = `Dispatch refuses the load: condition too poor to accept. ${money(penalty)} charged and the freight is written off.`;
+          } else {
+            const timeBonus = contract.timeLimit ? clamp(game.contractTime / contract.timeLimit, 0, 1) * 0.25 : 0;
+            const reward = Math.round(base * condition * (1 + timeBonus));
+            const route = `${contract.origin}-${contract.destination}`;
+            game.credits += reward;
+            game.reputation += condition > 0.92 ? 2 : 1;
+            game.completed += 1;
+            game.routeRuns[route] = (game.routeRuns[route] ?? 0) + 1;
+            audio.tone("success", muted);
+            note = `Freight delivered cleanly. ${money(reward)} credited to your account.`;
+          }
           game.cargo = game.cargo.filter((item) => item.source !== "contract");
           game.activeContractId = null;
           game.contractTime = 0;
+          game.contractDeadline = 0;
           game.pickups = game.pickups.filter((item) => item.source !== "contract");
-          audio.tone("success", muted);
-          note = `Freight delivered cleanly. ${money(reward)} credited to your account.`;
         } else {
           note = "Destination reached, but the manifest is incomplete. Return for the remaining freight.";
         }
@@ -893,6 +999,33 @@ export default function EmberlineGame() {
       setSavePulse(true);
       window.setTimeout(() => setSavePulse(false), 900);
       notify(note, 6);
+    };
+
+    /**
+     * A contract that outlives its hard deadline.
+     *
+     * The manifest voids and dispatch takes its cut whether the ship is
+     * near the destination or nowhere close. Freight already clamped is
+     * not destroyed — it converts to ordinary salvage at a marked-down
+     * value, sellable at any port — but anything still waiting uncollected
+     * on the origin pad is simply cleared, the way an unclaimed pallet
+     * would be swept off a dock.
+     */
+    const expireContract = (game: GameMutable, contract: ContractDefinition) => {
+      const penalty = Math.round(rewardFor(contract, game.routeRuns) * DEADLINE_PENALTY_FRACTION);
+      game.cargo.forEach((item) => {
+        if (item.source !== "contract") return;
+        item.source = "salvage";
+        item.value *= EXPIRED_SALVAGE_VALUE_FRACTION;
+      });
+      game.pickups = game.pickups.filter((item) => item.source !== "contract");
+      game.activeContractId = null;
+      game.contractTime = 0;
+      game.contractDeadline = 0;
+      game.credits -= penalty;
+      game.reputation = Math.max(0, game.reputation - 1);
+      audio.tone("impact", muted);
+      notify(`${contract.title} missed its deadline. Dispatch voids the manifest and bills ${money(penalty)}; any freight aboard is marked down to salvage. Account stands at ${money(game.credits)}.`, 8);
     };
 
     /** A standing warning that repeats no more often than WARNING_INTERVAL. */
@@ -1142,7 +1275,15 @@ export default function EmberlineGame() {
       }
 
       const active = contractById(game.activeContractId);
-      if (active?.timeLimit && game.contractTime > 0) game.contractTime = Math.max(0, game.contractTime - dt);
+      if (active?.timeLimit) {
+        if (game.contractTime > 0) game.contractTime = Math.max(0, game.contractTime - dt);
+        game.contractDeadline = Math.max(0, game.contractDeadline - dt);
+        if (game.contractDeadline <= 0) {
+          expireContract(game, active);
+        } else if (game.contractDeadline < DEADLINE_WARNING_WINDOW) {
+          nag(game, `${active.title}: hard deadline in ${Math.ceil(game.contractDeadline)}s. Miss it and the freight goes to salvage.`, 3);
+        }
+      }
       const shipDef = shipById(game.shipId);
       const cargoMass = game.cargo.reduce((sum, item) => sum + CARGO[item.kind].mass, 0);
       const totalMass = shipDef.dryMass + cargoMass;
@@ -1214,11 +1355,22 @@ export default function EmberlineGame() {
         game.ship.vy += (dy / Math.max(1, dist)) * grav * dt;
       }
 
+      /* Flight wear on the freight aboard. Fragile cargo takes it starting
+         well under what any loaded ship can produce; everything else only
+         above what a loaded ship ordinarily reaches, so ordinary freight's
+         wear comes mostly from contact instead (see resolveContacts). Both
+         floor at the same 0.15 a hard impact would leave it at. */
       const accelerationLoad = appliedForce / Math.max(1, totalMass);
-      if (active?.kind === "fragile" && accelerationLoad > 54) {
-        game.cargo.filter((item) => item.source === "contract").forEach((item) => {
-          item.condition = Math.max(0.45, item.condition - (accelerationLoad - 54) * dt * 0.0014);
-        });
+      if (active) {
+        const fragile = active.kind === "fragile";
+        const threshold = fragile ? FRAGILE_LOAD_THRESHOLD : ORDINARY_LOAD_THRESHOLD;
+        if (accelerationLoad > threshold) {
+          const rate = fragile ? FRAGILE_WEAR_RATE : ORDINARY_WEAR_RATE;
+          const wear = (accelerationLoad - threshold) * rate * dt;
+          game.cargo.filter((item) => item.source === "contract").forEach((item) => {
+            item.condition = Math.max(0.15, item.condition - wear);
+          });
+        }
       }
 
       applyAtmosphere(game, dt);
@@ -1585,6 +1737,9 @@ export default function EmberlineGame() {
   const fuelCapacity = currentShip.fuelCapacity * (ui.upgrades.includes("tank") ? 1.35 : 1);
   const cargoMass = ui.cargo.reduce((sum, item) => sum + CARGO[item.kind].mass, 0);
   const contractsHere = useMemo(() => CONTRACTS.filter((contract) => contract.origin === ui.dockedId), [ui.dockedId]);
+  const carriedFreight = ui.cargo.filter((item) => item.source === "contract");
+  /** 1 before anything is clamped, so the manifest starts looking pristine rather than warned-about. */
+  const carriedCondition = carriedFreight.length ? carriedFreight.reduce((sum, item) => sum + item.condition, 0) / carriedFreight.length : 1;
 
   return (
     <main className={`game-shell ${screen === "title" ? "is-title" : "is-playing"}`}>
@@ -1636,15 +1791,27 @@ export default function EmberlineGame() {
                 <h2>{active.title}</h2>
                 <p>{active.description}</p>
                 <div className="manifest-line">
-                  <CargoPortrait kind={active.cargo} count={active.quantity} />
-                  <div><b>{CARGO[active.cargo].name}</b>{CARGO[active.cargo].short} × {active.quantity} · {CARGO[active.cargo].mass * active.quantity} t</div>
+                  <CargoPortrait kind={active.cargo} count={active.quantity} condition={carriedCondition} />
+                  <div>
+                    <b>{CARGO[active.cargo].name}</b>{CARGO[active.cargo].short} × {active.quantity} · {CARGO[active.cargo].mass * active.quantity} t
+                    {carriedFreight.length > 0 && (
+                      <span className={`condition-readout ${carriedCondition < CONDITION_REJECT_THRESHOLD ? "danger" : carriedCondition < 0.8 ? "warn" : ""}`}>
+                        Condition {Math.round(carriedCondition * 100)}%{carriedCondition < CONDITION_REJECT_THRESHOLD ? " · will be refused" : ""}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="route-line"><span>{stationById(active.origin)?.callSign}</span><i /><span>{stationById(active.destination)?.callSign}</span></div>
                 <div className="objective">
                   <small>NEXT ACTION</small>
                   <strong>{ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(active.destination)?.name}`}</strong>
                 </div>
-                {active.timeLimit && <div className={`timer ${ui.contractTime < 30 ? "urgent" : ""}`}><span>TIME BONUS</span><b>{seconds(ui.contractTime)}</b></div>}
+                {active.timeLimit && (
+                  <>
+                    <div className={`timer ${ui.contractTime < 30 ? "urgent" : ""}`}><span>TIME BONUS</span><b>{seconds(ui.contractTime)}</b></div>
+                    <div className={`timer deadline ${ui.contractDeadline < DEADLINE_WARNING_WINDOW ? "urgent" : ""}`}><span>HARD DEADLINE</span><b>{seconds(ui.contractDeadline)}</b></div>
+                  </>
+                )}
                 <button className="text-button danger" onClick={abandonContract}>Abandon contract</button>
               </>
             ) : (
@@ -1772,8 +1939,8 @@ export default function EmberlineGame() {
           <button className="modal-close" onClick={() => setHelpOpen(false)}>Close <kbd>ESC</kbd></button>
           <div className="guide-heading"><p className="eyebrow">KESTREL U-3 / QUICK REFERENCE</p><h2 id="guide-title">Momentum is the road.</h2><p>Thrust changes velocity. Releasing the controls does not stop the ship. Turn early, brake earlier, and arrive slowly.</p></div>
           <div className="guide-grid">
-            <article><span>01</span><h3>Take local work</h3><p>While docked, choose a manifest from the contract board. Repeated routes gradually pay less as local demand is met. Nobody dies out here — they go broke. A tow or a written-off hull is billed whether you can cover it or not, and an overdrawn account is held to small work until you fly it back.</p></article>
-            <article><span>02</span><h3>Secure the load</h3><p>Release the berth, drift within 92 m of each staged unit, match its speed, then press <kbd>SPACE</kbd>. Staged freight rides its pad around with the port. Cargo changes mass and handling.</p></article>
+            <article><span>01</span><h3>Take local work</h3><p>While docked, choose a manifest from the contract board. Repeated routes gradually pay less as local demand is met. Every manifest with a bonus window also carries a hard deadline well beyond it — miss that and the contract voids, but freight already aboard survives as marked-down salvage rather than being lost outright. Nobody dies out here — they go broke. A tow or a written-off hull is billed whether you can cover it or not, and an overdrawn account is held to small work until you fly it back.</p></article>
+            <article><span>02</span><h3>Secure the load</h3><p>Release the berth, drift within 92 m of each staged unit, match its speed, then press <kbd>SPACE</kbd>. Staged freight rides its pad around with the port. Cargo changes mass and handling — and fragile freight cannot take the main drive the way sturdier cargo can, so favor the brake over the throttle. The manifest card shows condition as you fly; arrive below half strength and the destination refuses the load outright, penalty included.</p></article>
             <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward. <kbd>A</kbd>/<kbd>D</kbd> rotate. <kbd>Q</kbd>/<kbd>E</kbd> strafe. The teal line is your true velocity. Burn, coast, flip, brake — a loaded round trip costs most of a tank, so the coast is free and the burn is not. Aim where the beacon is going, not where it sits.</p></article>
             <article><span>04</span><h3>Make a clean arrival</h3><p>Ports orbit, so an arrival is a rendezvous. <b>CLOSING</b> on the panel is your speed relative to the pad, and it has to be under 36 m/s to clamp — matching a port’s motion matters more than stopping. Structure is solid: contact above 18 m/s costs hull, above 55 m/s it tears a container off the spine.</p></article>
             <article><span>05</span><h3>Respect the deck</h3><p>The red ring is a planet’s surface and it is solid. The dashed ring above it is atmosphere: drag and heat, survivable briefly, useful for shedding speed. Loaded, you cannot climb straight out of a deep well.</p></article>
