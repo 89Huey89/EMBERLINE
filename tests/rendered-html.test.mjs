@@ -38,10 +38,9 @@ test("keeps the game systems modular and browser-native", async () => {
   assert.match(game, /AudioContext/);
   assert.match(game, /body\.gravity/);
   assert.match(game, /cargoMass/);
-  assert.match(data, /export const BODIES/);
-  assert.match(data, /export const STATIONS/);
+  assert.match(data, /export const SYSTEMS/);
   assert.match(data, /export const SHIPS/);
-  assert.match(data, /export const CONTRACTS/);
+  assert.match(data, /export function systemById/);
   assert.match(styles, /@media \(max-width: 760px\)/);
   assert.match(styles, /prefers-reduced-motion/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);

@@ -175,4 +175,4 @@ nothing else. Warm colours belong to structure and light.
 5. Planets, naming, parallax — done.
 6. Station character modules — done.
 7. Mule, Atlas, Mastiff on the same vocabulary.
-8. The Wake: debris built from the same parts vocabulary.
+8. The Wake: debris built from the same parts vocabulary — done.

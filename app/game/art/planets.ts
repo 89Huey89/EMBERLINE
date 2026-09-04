@@ -1,4 +1,4 @@
-import type { CelestialBody, Vec2 } from "../types";
+import type { CelestialBody, PlanetSurface, Vec2 } from "../types";
 
 /**
  * Planet art lives here, separate from simulation code.
@@ -7,7 +7,8 @@ import type { CelestialBody, Vec2 } from "../types";
  * at 92% of their true radius, so they drift more slowly than the stations
  * and freight that share the camera transform. The simulation is untouched
  * by this: gravity and the gravity guide rings still use the true position
- * and the true radius. Nothing in the world collides with a planet.
+ * and the true radius. The surface a ship strikes is derived from the drawn
+ * disc — see SURFACE_CONTACT — so the hard deck is where the eye puts it.
  *
  * `drawPlanet` paints in planet-local space with the disc centred on the
  * origin, so the caller translates to `planetParallax(body, camera)` first
@@ -26,8 +27,37 @@ export const PLANET_PARALLAX = 0.85;
 /** Drawn radius as a fraction of the body's true (simulation) radius. */
 export const PLANET_SCALE = 0.92;
 
+/**
+ * Ship distance from a body's TRUE centre at which it touches the DRAWN
+ * surface, as a multiple of the body's true radius.
+ *
+ * The parallax shift is proportional to the camera's own offset from the
+ * body, and the camera rides the ship, so a ship `d` out sits `d * PLANET_
+ * PARALLAX` from the drawn centre. Setting that equal to the drawn radius
+ * leaves a constant: contact always happens at the same multiple of the
+ * radius, whatever the body or the range. That is what the simulation
+ * collides against, and what the terrain warning ring is drawn at, so the
+ * hard deck agrees with the painting instead of with the raw radius.
+ */
+export const SURFACE_CONTACT = PLANET_SCALE / PLANET_PARALLAX;
+
+/**
+ * Top of the atmosphere on bodies that have one, as a multiple of the true
+ * radius. Between here and SURFACE_CONTACT a ship meets drag and heating:
+ * the band is the warning that the deck is coming, and a way to shed speed
+ * for free if the pilot is willing to cook the freight.
+ */
+export const ATMOSPHERE_TOP = 1.3;
+
 /** System light angle. Everything on every planet is lit from here. */
-const LIGHT = -2.53; // sun at upper left, toward the busy side of the system
+/**
+ * The angle everything in this file is drawn lit from, and the angle the
+ * cached surfaces are baked at. It is no longer where the star is — the star
+ * moves relative to every body — so it is now purely a reference: `drawPlanet`
+ * turns a body by the difference between this and the real light angle. See
+ * `PlanetArtState.light`.
+ */
+const LIGHT = -2.53;
 const LIGHT_DIR = { x: Math.cos(LIGHT), y: Math.sin(LIGHT) };
 /** Belt tilt on Rayleigh; the terrain and storms follow it. */
 const TILT = -0.18;
@@ -38,6 +68,18 @@ export type PlanetArtState = {
   time: number;
   /** Camera zoom; keeps hairlines and lamp dots readable at any zoom. */
   zoom: number;
+  /**
+   * The angle light actually arrives from, in world space.
+   *
+   * Everything in this file is drawn lit from the fixed `LIGHT` below, and
+   * much of it is baked into a cached surface that would be ruinous to
+   * repaint as a body moves. So rather than re-light, `drawPlanet` rotates
+   * the whole body by the difference: the baked lit side is simply turned to
+   * face the star. A planet's terrain rotating with its own daylight costs
+   * nothing and is what a turning planet does anyway. Omit for the fixed
+   * angle, which is what the menu portraits want.
+   */
+  light?: number;
 };
 
 type RGB = readonly [number, number, number];
@@ -51,12 +93,38 @@ type PlanetPaint = {
   surfacePx: number;
 };
 
-const PAINT: Record<string, PlanetPaint> = {
-  cinder: { highlight: "#e3a068", dark: "#1a1210", shadow: "#0c0704", surfacePx: 1280 },
-  morrow: { highlight: "#e6efec", dark: "#0b1214", shadow: "#06111c", surfacePx: 768 },
-  brindle: { highlight: "#9c8670", dark: "#1a1412", shadow: "#070605", surfacePx: 512 },
+/**
+ * A palette per surface, not per world.
+ *
+ * Keyed by what a body declares itself to be, so a new world inherits a
+ * coherent look by choosing a surface and overrides only what it wants to
+ * differ. The three worlds in the Cinder system each override the whole set,
+ * which is why their colours are unchanged by this being generic.
+ */
+const SURFACE_PAINT: Record<PlanetSurface, PlanetPaint> = {
+  rocky: { highlight: "#c8b79c", dark: "#141210", shadow: "#060809", surfacePx: 768 },
+  ice: { highlight: "#dfeae8", dark: "#0b1214", shadow: "#06111c", surfacePx: 768 },
+  metallic: { highlight: "#9c8670", dark: "#1a1412", shadow: "#070605", surfacePx: 512 },
 };
-const DEFAULT_PAINT: PlanetPaint = { highlight: "#c8b79c", dark: "#141210", shadow: "#060809", surfacePx: 768 };
+
+/**
+ * A body's palette: its surface's, with its own overrides on top.
+ *
+ * Merged field by field rather than by spreading the override object. A
+ * `Partial` spread over a complete record widens every field to possibly
+ * undefined, which would push a null check onto every colour in the file.
+ */
+function resolvePaint(body: CelestialBody): PlanetPaint {
+  const base = SURFACE_PAINT[body.surface ?? "rocky"];
+  const over = body.paint;
+  if (!over) return base;
+  return {
+    highlight: over.highlight ?? base.highlight,
+    dark: over.dark ?? base.dark,
+    shadow: over.shadow ?? base.shadow,
+    surfacePx: over.surfacePx ?? base.surfacePx,
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /* Small helpers                                                        */
@@ -165,12 +233,14 @@ function rocheOutline(radius: number): Vec2[] {
  *
  * The body keeps its true position in the simulation; only the painting
  * moves, by the fraction of the camera's offset the parallax lets through.
+ * `at` is where the body is now — bodies orbit, so its authored anchor is
+ * only the start of a shift.
  */
-export function planetParallax(body: CelestialBody, camera: { x: number; y: number }) {
+export function planetParallax(body: CelestialBody, at: Vec2, camera: { x: number; y: number }) {
   const slip = 1 - PLANET_PARALLAX;
   return {
-    x: body.position.x + (camera.x - body.position.x) * slip,
-    y: body.position.y + (camera.y - body.position.y) * slip,
+    x: at.x + (camera.x - at.x) * slip,
+    y: at.y + (camera.y - at.y) * slip,
     radius: body.radius * PLANET_SCALE,
   };
 }
@@ -508,8 +578,9 @@ function surfaceFor(body: CelestialBody, radius: number, paint: PlanetPaint) {
   const scale = paint.surfacePx / (2 * radius * SURFACE_SPAN);
   ctx.translate(paint.surfacePx / 2, paint.surfacePx / 2);
   ctx.scale(scale, scale);
-  if (body.id === "brindle") paintRocheSurface(ctx, radius);
-  else if (body.id === "morrow") paintNernstSurface(ctx, radius);
+  const surface = body.surface ?? "rocky";
+  if (surface === "metallic") paintRocheSurface(ctx, radius);
+  else if (surface === "ice") paintNernstSurface(ctx, radius);
   else paintRayleighSurface(ctx, radius);
   surfaces.set(body.id, canvas);
   return canvas;
@@ -525,11 +596,11 @@ function surfaceFor(body: CelestialBody, radius: number, paint: PlanetPaint) {
 export function drawPlanet(ctx: CanvasRenderingContext2D, body: CelestialBody, state: PlanetArtState) {
   const { zoom } = state;
   const radius = body.radius * PLANET_SCALE;
-  const paint = PAINT[body.id] ?? DEFAULT_PAINT;
+  const paint = resolvePaint(body);
   const atmosphere = body.atmosphere;
   const airless = !atmosphere;
-  const roche = body.id === "brindle";
-  const outline = roche ? rocheOutline(radius) : null;
+  const irregular = body.irregular ?? false;
+  const outline = irregular ? rocheOutline(radius) : null;
 
   /** The body's silhouette: a disc, or Roche's irregular outline. */
   const shape = () => {
@@ -545,6 +616,9 @@ export function drawPlanet(ctx: CanvasRenderingContext2D, body: CelestialBody, s
   ctx.save();
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
+  /* Turn the body so its baked daylight faces the real star. Everything below
+     is drawn in the fixed LIGHT frame and this is what makes that honest. */
+  if (state.light !== undefined) ctx.rotate(state.light - LIGHT);
 
   /* 1. atmosphere: a soft shell of scattered light around the limb, brighter towards the sun */
   if (atmosphere) {
@@ -588,8 +662,11 @@ export function drawPlanet(ctx: CanvasRenderingContext2D, body: CelestialBody, s
     const span = radius * SURFACE_SPAN;
     ctx.drawImage(surface, -span, -span, span * 2, span * 2);
   }
-  if (body.id === "cinder") drawRayleighLights(ctx, radius, zoom);
-  if (roche) drawRocheLamps(ctx, radius, state);
+  if (body.settled) drawRayleighLights(ctx, radius, zoom);
+  /* Navigation lamps belong to a mined metallic body, not to a ragged
+     silhouette. The old single id check conflated the two; a world could
+     reasonably be one without the other. */
+  if ((body.surface ?? "rocky") === "metallic") drawRocheLamps(ctx, radius, state);
 
   /* sub-solar sheen */
   const sheen = ctx.createRadialGradient(lx, ly, 0, lx, ly, radius * 0.55);
@@ -634,7 +711,7 @@ export function drawPlanet(ctx: CanvasRenderingContext2D, body: CelestialBody, s
   ctx.restore();
 
   /* 6. the lit limb, and a hard edge on anything without air */
-  ctx.strokeStyle = tint(roche ? paint.highlight : (atmosphere ?? paint.highlight), 0.7);
+  ctx.strokeStyle = tint(irregular ? paint.highlight : (atmosphere ?? paint.highlight), 0.7);
   ctx.lineWidth = 2 / zoom;
   ctx.beginPath();
   if (outline) {
@@ -663,7 +740,7 @@ export function drawPlanet(ctx: CanvasRenderingContext2D, body: CelestialBody, s
   }
 
   /* elevators hang outside the disc, so they come after the limb */
-  if (body.id === "cinder") drawRayleighElevators(ctx, radius, zoom, state.time);
+  if (body.settled) drawRayleighElevators(ctx, radius, zoom, state.time);
 
   ctx.restore();
 }

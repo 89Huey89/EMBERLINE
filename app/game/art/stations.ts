@@ -1,4 +1,4 @@
-import type { Station } from "../types";
+import type { Station, Vec2 } from "../types";
 import { PAINT } from "./ships";
 
 /**
@@ -16,8 +16,16 @@ import { PAINT } from "./ships";
 
 const TAU = Math.PI * 2;
 
-/** The simulation's docking capture radius, in world units. */
-export const BERTH_CAPTURE = 105;
+/**
+ * The simulation's docking capture radius, in world units.
+ *
+ * It has to clear `stationColliders` by a wide margin: the pilot needs room
+ * to cross into the envelope, read the speed, and press the clamp before the
+ * structure is in reach. The worst case is the Atlas at a large station,
+ * which makes contact around 80 units out, so the envelope sits well beyond
+ * that and the berth pad at 100 stays in open space.
+ */
+export const BERTH_CAPTURE = 140;
 
 export type StationArtState = {
   time: number;
@@ -25,26 +33,71 @@ export type StationArtState = {
   zoom: number;
   /** True for the station the pilot has targeted. */
   target: boolean;
-  /** Ship speed, m/s. Drives the target ring's approach colour. */
-  shipSpeed: number;
+  /**
+   * Ship speed RELATIVE to this station, m/s. Drives the target ring's
+   * approach colour: a port is moving, so closing speed is the number that
+   * decides whether an arrival is clean, not speed over the star system.
+   */
+  closingSpeed: number;
   /** Ship distance to this station, world units. */
   shipDistance: number;
+  /** Where the station is now. Stations orbit; see `orbits.ts`. */
+  at: Vec2;
 };
 
 /**
  * A point `distance` out from the hub along the berth arm, in world
  * space: station-local (-distance, 0) rotated by the station's
- * orientation. The pad is centred on `berthPoint(station, 100)`.
+ * orientation. The pad is centred on `berthPoint(station, 100, at)`.
+ *
+ * `at` is where the station is now — stations orbit, so the berth moves
+ * with them. It defaults to the authored anchor position, which is correct
+ * for the menus and portraits and for the start of a shift, but flight code
+ * must pass the live pose from `stationPose`.
  */
-export function berthPoint(station: Station, distance: number) {
+export function berthPoint(station: Station, distance: number, at: Vec2 = station.position) {
   return {
-    x: station.position.x - Math.cos(station.orientation) * distance,
-    y: station.position.y - Math.sin(station.orientation) * distance,
+    x: at.x - Math.cos(station.orientation) * distance,
+    y: at.y - Math.sin(station.orientation) * distance,
   };
 }
 
 export function stationScale(station: Station) {
   return station.size === "large" ? 1.22 : station.size === "small" ? 0.76 : 1;
+}
+
+/**
+ * The solid parts of a station, as circles in world space.
+ *
+ * Four discs walk the boom from the hub outward — hub, tank pair, radiator
+ * bank, solar array — sized to swallow the drawing at each stop and to
+ * overlap their neighbours, so the structure reads as one continuous body
+ * rather than four beads with gaps between them. They are derived from the
+ * local-space geometry in `drawBody`, so moving a part in the art moves what
+ * the ship hits. The masts are deliberately absent: a lattice antenna is not
+ * something a pilot can see well enough to be punished for clipping, and the
+ * hub disc stops at the dome rather than at the habitat ring on the large
+ * stations, so the berth stays reachable by the widest ship in the fleet.
+ *
+ * Nothing here reaches toward -x, which is where the berth arm is. That
+ * leaves the approach corridor to the pad open from the front and solid from
+ * every other angle: the way in is the way the lights point.
+ */
+export function stationColliders(station: Station, at: Vec2 = station.position) {
+  const scale = stationScale(station);
+  const cos = Math.cos(station.orientation);
+  const sin = Math.sin(station.orientation);
+  const local: [number, number][] = [
+    [0, station.size === "large" ? 34 : 26], // dome, module block, hub core
+    [31, 26], // propellant tanks
+    [79, 34], // radiator bank
+    [140, 38], // solar array
+  ];
+  return local.map(([along, radius]) => ({
+    x: at.x + cos * along * scale,
+    y: at.y + sin * along * scale,
+    r: radius * scale,
+  }));
 }
 
 /* ------------------------------------------------------------------ */
@@ -255,10 +308,14 @@ function drawBody(ctx: CanvasRenderingContext2D, station: Station, time: number,
 }
 
 /* ------------------------------------------------------------------ */
-/* Per-station character modules — scaled with the body                 */
+/* Character modules — scaled with the body                             */
 /*                                                                      */
 /* Every station shares the boom, hub, radiators and array above; what  */
 /* makes one recognisable at a glance is the industry bolted onto it.   */
+/* A port declares which module it carries rather than the art matching */
+/* on its id, so these are a set to choose from and a port in a new     */
+/* system picks one instead of needing one written. A port that names   */
+/* none simply carries the common body.                                 */
 /* These are drawn after the common body and before the berth, so they  */
 /* never intrude on the arm or the pad (negative x around y = 0).       */
 /* ------------------------------------------------------------------ */
@@ -288,11 +345,11 @@ function jitter(seed: number) {
 }
 
 function drawCharacter(ctx: CanvasRenderingContext2D, station: Station, time: number, work: string) {
-  switch (station.id) {
+  switch (station.module ?? "none") {
     /* -------------------------------------------------------------- */
     /* PILGRIM — commerce & habitation: a market ring people live on.   */
     /* -------------------------------------------------------------- */
-    case "pilgrim": {
+    case "market": {
       ctx.strokeStyle = "#5b5549";
       ctx.lineWidth = 5;
       ctx.beginPath(); ctx.arc(0, 0, 34, 0, TAU); ctx.stroke();
@@ -324,7 +381,7 @@ function drawCharacter(ctx: CanvasRenderingContext2D, station: Station, time: nu
     /* -------------------------------------------------------------- */
     /* SINTER — ore refinery: kilns burning, slag out the far end.      */
     /* -------------------------------------------------------------- */
-    case "sinter": {
+    case "kiln": {
       ([[-20, -30], [-6, -34]] as const).forEach(([x, y], index) => {
         ctx.beginPath(); ctx.arc(x, y, 7, 0, TAU);
         outlined(ctx, "#4a4842", 1);
@@ -357,7 +414,7 @@ function drawCharacter(ctx: CanvasRenderingContext2D, station: Station, time: nu
     /* -------------------------------------------------------------- */
     /* ANVIL — shipyard: a hull in an open cradle, cranes over it.      */
     /* -------------------------------------------------------------- */
-    case "anvil": {
+    case "shipyard": {
       ctx.strokeStyle = PAINT.steelLight;
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.roundRect(-60, -70, 90, 36, 3); ctx.stroke();
@@ -396,7 +453,7 @@ function drawCharacter(ctx: CanvasRenderingContext2D, station: Station, time: nu
     /* -------------------------------------------------------------- */
     /* DEEPWELL — mining concern: cages on a winch, ore stacked up.     */
     /* -------------------------------------------------------------- */
-    case "deepwell": {
+    case "mine": {
       // floodlight washing the shaft, drawn first so the hardware sits in it
       ctx.fillStyle = "rgba(242,181,68,.06)";
       ctx.beginPath();
@@ -437,7 +494,7 @@ function drawCharacter(ctx: CanvasRenderingContext2D, station: Station, time: nu
     /* -------------------------------------------------------------- */
     /* BLUEHOUR — ice processing: frosted spheres, cold plumbing.       */
     /* -------------------------------------------------------------- */
-    case "bluehour": {
+    case "cryoworks": {
       for (const [x, y] of [[-60, -40], [-42, -46], [-24, -40]] as const) {
         ctx.beginPath(); ctx.arc(x, y, 8, 0, TAU);
         outlined(ctx, "#cfd9d5", 1);
@@ -488,7 +545,7 @@ function drawCharacter(ctx: CanvasRenderingContext2D, station: Station, time: nu
     /* -------------------------------------------------------------- */
     /* QUIET — research platform: dishes, a long boom, keep-clear ring. */
     /* -------------------------------------------------------------- */
-    case "quiet": {
+    case "observatory": {
       ctx.strokeStyle = "rgba(231,223,205,.8)";
       ctx.lineWidth = 1.2;
       for (const [x, y, r] of [[-30, -40, 9], [40, -44, 7], [30, 44, 7]] as const) {
@@ -585,13 +642,13 @@ function drawBerth(ctx: CanvasRenderingContext2D, scale: number, time: number, w
 /* Entry point                                                          */
 /* ------------------------------------------------------------------ */
 export function drawStation(ctx: CanvasRenderingContext2D, station: Station, state: StationArtState) {
-  const { time, zoom, target, shipSpeed, shipDistance } = state;
+  const { time, zoom, target, closingSpeed, shipDistance, at } = state;
   const scale = stationScale(station);
-  const cold = station.id === "bluehour" || station.id === "quiet";
+  const cold = station.cold ?? false;
   const work = cold ? PAINT.teal : PAINT.marker;
 
   ctx.save();
-  ctx.translate(station.position.x, station.position.y);
+  ctx.translate(at.x, at.y);
   ctx.rotate(station.orientation);
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
@@ -606,9 +663,9 @@ export function drawStation(ctx: CanvasRenderingContext2D, station: Station, sta
 
   /* Capture envelope, in world space: what the docking clamp can reach. */
   ctx.beginPath();
-  ctx.arc(station.position.x, station.position.y, BERTH_CAPTURE, 0, TAU);
+  ctx.arc(at.x, at.y, BERTH_CAPTURE, 0, TAU);
   if (target) {
-    const fast = shipSpeed > 36;
+    const fast = closingSpeed > 36;
     const inside = shipDistance < BERTH_CAPTURE;
     ctx.strokeStyle = fast ? PAINT.tail : inside ? PAINT.teal : PAINT.amber;
     ctx.globalAlpha = fast ? 0.55 : inside ? 0.8 + Math.sin(time * 4) * 0.2 : 0.45;
