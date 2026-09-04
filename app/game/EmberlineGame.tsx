@@ -47,6 +47,27 @@ const WARNING_INTERVAL = 2.2;
 const IMPACT_INTERVAL = 1;
 /** Hull points that make an impact worth interrupting anything else to say. */
 const URGENT_DAMAGE = 10;
+
+/* ------------------------------------------------------------------ */
+/* Arrears                                                              */
+/*                                                                      */
+/* Nobody dies in this game; they go broke. An account is allowed to go */
+/* under, and being under is the failure state: dispatch holds back the */
+/* work worth having and the yard stops selling you anything but the    */
+/* propellant you need to earn your way back.                           */
+/*                                                                      */
+/* The one rule that must never break is that a pilot can always work.  */
+/* Two things guarantee it: propellant is sold on the tab however deep  */
+/* the hole is, and the ceiling below is set above the best-paying job  */
+/* on Pilgrim's board — which is where every rescue puts you down.      */
+/* ------------------------------------------------------------------ */
+
+/** What the rescue tug bills for a recovery under power. */
+const TOW_FEE = 1200;
+/** The excess on a hull written off entirely. */
+const INSURANCE_EXCESS = 1400;
+/** The best-paying manifest dispatch will book to an overdrawn account. */
+const ARREARS_CEILING = 3000;
 /**
  * Ceiling on gravitational acceleration, m/s².
  *
@@ -186,7 +207,11 @@ const distance = (a: { x: number; y: number }, b: { x: number; y: number }) => M
 const stationById = (id: string | null) => STATIONS.find((station) => station.id === id);
 const shipById = (id: ShipDefinition["id"]) => SHIPS.find((ship) => ship.id === id) ?? SHIPS[0];
 const contractById = (id: string | null) => CONTRACTS.find((contract) => contract.id === id);
-const money = (value: number) => `₡${Math.max(0, Math.round(value)).toLocaleString("en-US")}`;
+/** Signed, because an account can be overdrawn and has to look overdrawn. */
+const money = (value: number) => {
+  const rounded = Math.round(value);
+  return `${rounded < 0 ? "−" : ""}₡${Math.abs(rounded).toLocaleString("en-US")}`;
+};
 const seconds = (value: number) => `${Math.max(0, Math.floor(value / 60))}:${String(Math.max(0, Math.floor(value % 60))).padStart(2, "0")}`;
 
 /* ------------------------------------------------------------------ */
@@ -594,6 +619,7 @@ export default function EmberlineGame() {
     if (game.activeContractId) return notify("Complete or abandon the active contract first.");
     if (game.dockedId !== contract.origin) return notify("This freight is staged at another port.");
     if (game.reputation < contract.minReputation) return notify(`Requires reputation ${contract.minReputation}.`);
+    if (game.credits < 0 && contract.baseReward > ARREARS_CEILING) return notify(`Dispatch holds anything over ${money(ARREARS_CEILING)} while the account is overdrawn.`);
     if ((contract.minSlots ?? contract.quantity) > ship.slots + (game.upgrades.includes("clamps") ? 1 : 0)) return notify("This load needs more cargo clamps.");
     if (contract.requiredShip && contract.requiredShip !== game.shipId) return notify(`Dispatch requires the ${shipById(contract.requiredShip).name} tug.`);
     if (contract.kind === "cryogenic" && !game.upgrades.includes("cryo")) return notify("A powered cryogenic umbilical is required.");
@@ -646,12 +672,16 @@ export default function EmberlineGame() {
     const amount = kind === "fuel" ? fuelCapacity - game.ship.fuel : 100 - game.ship.hull;
     const cost = Math.ceil(amount * (kind === "fuel" ? 4 : 18));
     if (cost <= 0) return notify(kind === "fuel" ? "Propellant tanks already full." : "No hull work required.");
-    if (game.credits < cost) return notify(`Service estimate is ${money(cost)}. Insufficient balance.`);
+    /* Propellant goes on the tab at any balance. A pilot who cannot buy fuel
+       cannot earn, and a debt you cannot work off is not a setback. Hull work
+       is elective by comparison, so it waits for a settled account. */
+    if (kind === "repair" && game.credits < cost) return notify(`Hull work is ${money(cost)} and the yard wants a settled account first.`);
     game.credits -= cost;
     if (kind === "fuel") game.ship.fuel = fuelCapacity;
     else game.ship.hull = 100;
     audio.tone("ui", muted);
-    notify(`${kind === "fuel" ? "Propellant loaded" : "Hull work complete"}. ${money(cost)} debited.`);
+    const onTab = kind === "fuel" && game.credits < 0;
+    notify(`${kind === "fuel" ? "Propellant loaded" : "Hull work complete"}. ${money(cost)} ${onTab ? `on the tab. Account stands at ${money(game.credits)}.` : "debited."}`);
   }, [audio, muted, notify]);
 
   const buyUpgrade = useCallback((id: string) => {
@@ -660,6 +690,7 @@ export default function EmberlineGame() {
     const station = stationById(game.dockedId);
     if (!upgrade || !station?.services.includes("upgrades")) return notify("Upgrade work is only available at a fitted yard.");
     if (game.upgrades.includes(id)) return;
+    if (game.credits < 0) return notify("The yard will not open a refit against an overdrawn account.");
     if (game.credits < upgrade.cost) return notify("The account does not cover this refit.");
     game.credits -= upgrade.cost;
     game.upgrades.push(id);
@@ -675,6 +706,9 @@ export default function EmberlineGame() {
     if (!station?.services.includes("ships")) return notify("Owned vessels are berthed at Anvil Gate.");
     if (game.activeContractId || game.cargo.length) return notify("Unload the current ship before changing vessels.");
     if (!game.ownedShips.includes(id)) {
+      /* Moving between hulls you already own stays free at any balance; it is
+         only buying another one that waits for the account to be square. */
+      if (game.credits < 0) return notify("No broker will sell to an overdrawn account. Clear it first.");
       if (game.credits < ship.cost) return notify(`Purchase requires ${money(ship.cost)}.`);
       game.credits -= ship.cost;
       game.ownedShips.push(id);
@@ -688,7 +722,7 @@ export default function EmberlineGame() {
 
   const emergencyTow = useCallback(() => {
     const game = gameRef.current;
-    const cost = Math.min(900, Math.max(0, game.credits));
+    const cost = TOW_FEE;
     const station = STATIONS[0];
     const pose = stationPose(station, game.elapsed);
     const berth = berthPoint(station, 100, pose);
@@ -699,7 +733,8 @@ export default function EmberlineGame() {
     game.pickups = [];
     game.activeContractId = null;
     game.contractTime = 0;
-    notify(`Pilgrim rescue tug recovered the vessel. ${money(cost)} debited.`);
+    game.reputation = Math.max(0, game.reputation - 1);
+    notify(`Pilgrim rescue tug recovered the vessel. ${money(cost)} billed; account stands at ${money(game.credits)}.`, 7);
   }, [notify]);
 
   const setTarget = useCallback((id: string) => {
@@ -807,6 +842,7 @@ export default function EmberlineGame() {
       game.shake = 4;
       audio.tone("dock", muted);
 
+      const wasOverdrawn = game.credits < 0;
       let note = `Docking capture confirmed at ${station.name}.`;
       const salvage = game.cargo.filter((item) => item.source === "salvage");
       if (salvage.length) {
@@ -843,12 +879,16 @@ export default function EmberlineGame() {
       }
       const capacity = shipById(game.shipId).fuelCapacity * (game.upgrades.includes("tank") ? 1.35 : 1);
       if (game.ship.fuel < Math.min(8, capacity * 0.08)) {
+        /* Always granted and always charged in full. Metering it by the
+           balance would strand exactly the pilot who needs it. */
         const emergency = Math.min(14, capacity - game.ship.fuel);
-        const cost = Math.min(game.credits, Math.ceil(emergency * 5));
-        game.ship.fuel += cost / 5;
+        const cost = Math.ceil(emergency * 5);
+        game.ship.fuel += emergency;
         game.credits -= cost;
         note += ` Emergency reserve added for ${money(cost)}.`;
       }
+      if (wasOverdrawn && game.credits >= 0) note += " Account settled. Dispatch reopens the full board.";
+      else if (game.credits < 0) note += ` Account stands at ${money(game.credits)}.`;
       saveGame(game);
       setSavePulse(true);
       window.setTimeout(() => setSavePulse(false), 900);
@@ -1230,8 +1270,8 @@ export default function EmberlineGame() {
       game.shake *= Math.max(0, 1 - dt * 7);
 
       if (game.ship.hull <= 0) {
-        game.credits = Math.max(0, game.credits - 1400);
-        game.reputation = Math.max(0, game.reputation - 1);
+        game.credits -= INSURANCE_EXCESS;
+        game.reputation = Math.max(0, game.reputation - 2);
         game.cargo = [];
         game.pickups = [];
         game.activeContractId = null;
@@ -1241,7 +1281,7 @@ export default function EmberlineGame() {
         game.dockedId = "pilgrim";
         salvageSeededRef.current = false;
         saveGame(game);
-        notify(`Hull lost to ${lastHarmRef.current}. Pilgrim rescue recovered the wreck. Insurance excess: ₡1,400.`, 8);
+        notify(`Hull lost to ${lastHarmRef.current}. Pilgrim recovered the wreck. Excess ${money(INSURANCE_EXCESS)}; account stands at ${money(game.credits)}.`, 9);
       }
 
       if (actionRequestRef.current || (keysRef.current[" "] && !actionLatchRef.current)) {
@@ -1577,7 +1617,7 @@ export default function EmberlineGame() {
           <header className="topbar">
             <div className="brand"><b>EMBERLINE</b><span>OPERATOR 07 / {currentShip.name.toUpperCase()} {currentShip.model}</span></div>
             <div className="top-readouts">
-              <div><span>ACCOUNT</span><strong>{money(ui.credits)}</strong></div>
+              <div><span>{ui.credits < 0 ? "IN ARREARS" : "ACCOUNT"}</span><strong className={ui.credits < 0 ? "arrears" : ""}>{money(ui.credits)}</strong></div>
               <div><span>STANDING</span><strong>{String(ui.reputation).padStart(2, "0")}</strong></div>
               <div><span>JOBS</span><strong>{String(ui.completed).padStart(2, "0")}</strong></div>
             </div>
@@ -1624,7 +1664,7 @@ export default function EmberlineGame() {
             <div className="bar-row"><span>HULL</span><div className="meter hull"><i style={{ width: `${ui.hull}%` }} /></div><b>{Math.round(ui.hull)}%</b></div>
             <div className="telemetry-row"><span>PAYLOAD</span><b>{cargoMass} t / {ui.cargo.length} clamps</b></div>
             <button className={`assist-toggle ${ui.assist ? "active" : ""}`} onClick={() => { gameRef.current.assist = !gameRef.current.assist; setUi(snapshot(gameRef.current)); }}><span className="status-light" /> FLIGHT ASSIST {ui.assist ? "ON" : "OFF"} <kbd>F</kbd></button>
-            {!ui.dockedId && ui.fuel < 9 && <button className="tow-button" onClick={emergencyTow}>Request rescue tow · up to ₡900</button>}
+            {!ui.dockedId && ui.fuel < 9 && <button className="tow-button" onClick={emergencyTow}>Request rescue tow · {money(TOW_FEE)}</button>}
           </aside>
 
           {docked && (
@@ -1649,7 +1689,8 @@ export default function EmberlineGame() {
                   <div className="contract-list">
                     {contractsHere.map((contract) => {
                       const reward = rewardFor(contract, gameRef.current.routeRuns);
-                      const locked = ui.reputation < contract.minReputation || Boolean(contract.requiredShip && contract.requiredShip !== ui.shipId) || (contract.kind === "cryogenic" && !ui.upgrades.includes("cryo")) || (contract.minSlots ?? contract.quantity) > currentShip.slots + (ui.upgrades.includes("clamps") ? 1 : 0);
+                      const withheld = ui.credits < 0 && contract.baseReward > ARREARS_CEILING;
+                      const locked = withheld || ui.reputation < contract.minReputation || Boolean(contract.requiredShip && contract.requiredShip !== ui.shipId) || (contract.kind === "cryogenic" && !ui.upgrades.includes("cryo")) || (contract.minSlots ?? contract.quantity) > currentShip.slots + (ui.upgrades.includes("clamps") ? 1 : 0);
                       const cargo = CARGO[contract.cargo];
                       return (
                         <article className={`contract ${locked ? "locked" : ""}`} key={contract.id} style={{ "--accent": cargo.accent } as React.CSSProperties}>
@@ -1660,7 +1701,7 @@ export default function EmberlineGame() {
                           </div>
                           <div className="manifest"><span>{cargo.short} × {contract.quantity}</span><span>{cargo.mass * contract.quantity} t</span><span>{stationById(contract.origin)?.callSign} → {stationById(contract.destination)?.callSign}</span>{contract.timeLimit && <span>{seconds(contract.timeLimit)} bonus window</span>}</div>
                           <div className="tear" aria-hidden="true" />
-                          {locked ? <small className="requirement">Requires rep {contract.minReputation}{contract.requiredShip ? ` · ${shipById(contract.requiredShip).name}` : ""}{contract.kind === "cryogenic" ? " · Cryo umbilical" : ""}{(contract.minSlots ?? contract.quantity) > currentShip.slots + (ui.upgrades.includes("clamps") ? 1 : 0) ? ` · ${contract.minSlots ?? contract.quantity} clamps` : ""}</small> : <button disabled={Boolean(ui.activeContractId)} onClick={() => stageContract(contract)}>Accept manifest</button>}
+                          {withheld ? <small className="requirement">Withheld while the account is overdrawn</small> : locked ? <small className="requirement">Requires rep {contract.minReputation}{contract.requiredShip ? ` · ${shipById(contract.requiredShip).name}` : ""}{contract.kind === "cryogenic" ? " · Cryo umbilical" : ""}{(contract.minSlots ?? contract.quantity) > currentShip.slots + (ui.upgrades.includes("clamps") ? 1 : 0) ? ` · ${contract.minSlots ?? contract.quantity} clamps` : ""}</small> : <button disabled={Boolean(ui.activeContractId)} onClick={() => stageContract(contract)}>Accept manifest</button>}
                         </article>
                       );
                     })}
@@ -1668,10 +1709,10 @@ export default function EmberlineGame() {
                 )}
                 {panel === "service" && (
                   <div className="service-grid">
-                    <article><span>PROPELLANT</span><h3>{Math.round(ui.fuel)} / {Math.round(fuelCapacity)}</h3><p>Refined monopropellant, metered at this port’s posted rate.</p><button onClick={() => service("fuel")}>Fill tanks · {money(Math.ceil((fuelCapacity - ui.fuel) * 4))}</button></article>
-                    <article><span>HULL & RIGGING</span><h3>{Math.round(ui.hull)}% integrity</h3><p>Pressure shell, radiator, clamp, and RCS inspection.</p><button onClick={() => service("repair")}>Authorize work · {money(Math.ceil((100 - ui.hull) * 18))}</button></article>
+                    <article><span>PROPELLANT</span><h3>{Math.round(ui.fuel)} / {Math.round(fuelCapacity)}</h3><p>{ui.credits < 0 ? "Refined monopropellant. The yard meters it onto your tab until the account is square — you can always fly." : "Refined monopropellant, metered at this port’s posted rate."}</p><button onClick={() => service("fuel")}>Fill tanks · {money(Math.ceil((fuelCapacity - ui.fuel) * 4))}</button></article>
+                    <article><span>HULL & RIGGING</span><h3>{Math.round(ui.hull)}% integrity</h3><p>{ui.credits < 0 ? "Pressure shell, radiator, clamp, and RCS inspection. Withheld until the account is settled." : "Pressure shell, radiator, clamp, and RCS inspection."}</p><button disabled={ui.credits < 0} onClick={() => service("repair")}>Authorize work · {money(Math.ceil((100 - ui.hull) * 18))}</button></article>
                     {UPGRADES.map((upgrade) => (
-                      <article className={`${!docked.services.includes("upgrades") ? "locked" : ""} ${ui.upgrades.includes(upgrade.id) ? "fitted" : ""}`} key={upgrade.id}><span>{ui.upgrades.includes(upgrade.id) ? "INSTALLED" : "SHIP REFIT"}</span><h3>{upgrade.name}</h3><p>{upgrade.description}</p>{ui.upgrades.includes(upgrade.id) ? <small className="installed">Hardware fitted</small> : <button disabled={!docked.services.includes("upgrades")} onClick={() => buyUpgrade(upgrade.id)}>Install · {money(upgrade.cost)}</button>}</article>
+                      <article className={`${!docked.services.includes("upgrades") || ui.credits < 0 ? "locked" : ""} ${ui.upgrades.includes(upgrade.id) ? "fitted" : ""}`} key={upgrade.id}><span>{ui.upgrades.includes(upgrade.id) ? "INSTALLED" : "SHIP REFIT"}</span><h3>{upgrade.name}</h3><p>{upgrade.description}</p>{ui.upgrades.includes(upgrade.id) ? <small className="installed">Hardware fitted</small> : <button disabled={!docked.services.includes("upgrades") || ui.credits < 0} onClick={() => buyUpgrade(upgrade.id)}>Install · {money(upgrade.cost)}</button>}</article>
                     ))}
                   </div>
                 )}
@@ -1679,7 +1720,7 @@ export default function EmberlineGame() {
                   <div className="ship-list">
                     {SHIPS.map((ship) => {
                       const owned = ui.ownedShips.includes(ship.id);
-                      return <article className={`${ui.shipId === ship.id ? "selected" : ""} ${!docked.services.includes("ships") ? "locked" : ""}`} key={ship.id}><ShipPortrait ship={ship} /><span>{ship.role.toUpperCase()}</span><h3>{ship.name} <small>{ship.model}</small></h3><p>{ship.description}</p><div className="ship-stats"><span>{ship.slots} clamps</span><span>{ship.fuelCapacity} fuel</span><span>{ship.dryMass} t dry</span></div><button disabled={!docked.services.includes("ships") || ui.shipId === ship.id} onClick={() => buyOrSwitchShip(ship.id)}>{ui.shipId === ship.id ? "Active vessel" : owned ? "Move to active berth" : `Purchase · ${money(ship.cost)}`}</button></article>;
+                      return <article className={`${ui.shipId === ship.id ? "selected" : ""} ${!docked.services.includes("ships") ? "locked" : ""}`} key={ship.id}><ShipPortrait ship={ship} /><span>{ship.role.toUpperCase()}</span><h3>{ship.name} <small>{ship.model}</small></h3><p>{ship.description}</p><div className="ship-stats"><span>{ship.slots} clamps</span><span>{ship.fuelCapacity} fuel</span><span>{ship.dryMass} t dry</span></div><button disabled={!docked.services.includes("ships") || ui.shipId === ship.id || (!owned && ui.credits < 0)} onClick={() => buyOrSwitchShip(ship.id)}>{ui.shipId === ship.id ? "Active vessel" : owned ? "Move to active berth" : `Purchase · ${money(ship.cost)}`}</button></article>;
                     })}
                   </div>
                 )}
@@ -1731,7 +1772,7 @@ export default function EmberlineGame() {
           <button className="modal-close" onClick={() => setHelpOpen(false)}>Close <kbd>ESC</kbd></button>
           <div className="guide-heading"><p className="eyebrow">KESTREL U-3 / QUICK REFERENCE</p><h2 id="guide-title">Momentum is the road.</h2><p>Thrust changes velocity. Releasing the controls does not stop the ship. Turn early, brake earlier, and arrive slowly.</p></div>
           <div className="guide-grid">
-            <article><span>01</span><h3>Take local work</h3><p>While docked, choose a manifest from the contract board. Repeated routes gradually pay less as local demand is met.</p></article>
+            <article><span>01</span><h3>Take local work</h3><p>While docked, choose a manifest from the contract board. Repeated routes gradually pay less as local demand is met. Nobody dies out here — they go broke. A tow or a written-off hull is billed whether you can cover it or not, and an overdrawn account is held to small work until you fly it back.</p></article>
             <article><span>02</span><h3>Secure the load</h3><p>Release the berth, drift within 92 m of each staged unit, match its speed, then press <kbd>SPACE</kbd>. Staged freight rides its pad around with the port. Cargo changes mass and handling.</p></article>
             <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward. <kbd>A</kbd>/<kbd>D</kbd> rotate. <kbd>Q</kbd>/<kbd>E</kbd> strafe. The teal line is your true velocity. Burn, coast, flip, brake — a loaded round trip costs most of a tank, so the coast is free and the burn is not. Aim where the beacon is going, not where it sits.</p></article>
             <article><span>04</span><h3>Make a clean arrival</h3><p>Ports orbit, so an arrival is a rendezvous. <b>CLOSING</b> on the panel is your speed relative to the pad, and it has to be under 36 m/s to clamp — matching a port’s motion matters more than stopping. Structure is solid: contact above 18 m/s costs hull, above 55 m/s it tears a container off the spine.</p></article>

@@ -164,6 +164,7 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
 .telemetry-row { display: flex; justify-content: space-between; margin-top: 12px; color: var(--muted); font: var(--stencil); font-size: 8px; letter-spacing: .12em; }
 .telemetry-row b { color: #c7c8bd; font-size: 10px; font-weight: 600; }
 .telemetry-row b.hot { color: var(--danger); }
+.top-readouts strong.arrears { color: var(--danger); }
 .bar-row { display: grid; grid-template-columns: 72px 1fr 32px; gap: 8px; align-items: center; margin-top: 12px; color: var(--muted); font: var(--stencil); font-size: 8px; letter-spacing: .1em; }
 .bar-row b { color: #bbc0b9; text-align: right; font-size: 10px; font-weight: 600; }
 /* gauges: a strip of ten lamps, lit from the left */
