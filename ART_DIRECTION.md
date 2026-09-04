@@ -43,7 +43,13 @@ accent colour at the rear end, the stencil code, and visible contents. Every uni
 has corner castings, conspicuity tape along the bottom edge, two amber corner
 markers at the front, and one status light at the rear: amber steady when sound,
 red blinking when damaged, teal blinking when it is a powered cryogenic unit.
-Wear is rust spots that grow as condition drops. Drawings live in
+Like the ships, every unit takes one highlight line on the port
+edge and one shade band on the starboard flank, and casts a short shadow to
+starboard so it sits on the spine rather than floating over it. Crates are
+corrugated; tanks are held to their skid by two amber saddle straps; ore lumps
+have a lit facet; machines carry a control box with a lamp and a hydraulic ram.
+Wear is rust that starts at the corner castings and seams, then spreads; a
+damaged unit also carries a scorch smear and a dent. Drawings live in
 `app/game/art/cargo.ts`.
 
 ## Stations
@@ -71,11 +77,20 @@ with a little parallax (they move slower than the foreground and sit slightly
 smaller than their true radius) so the working layer reads as closer. Gravity
 still lives at the true position, marked by the guide ring.
 
-One light source at upper right. Every body gets a globe gradient, a soft
-terminator, limb darkening, and a lit limb. Rayleigh has six belts, two storms,
-city lights on its night side, and elevator threads. Nernst has fracture lines
-and craters with lit rims. Roche is an irregular polygon with dark craters and a
-line of blinking navigation lamps. Drawings live in `app/game/art/planets.ts`.
+One light source at upper left. Every body gets a globe gradient, a soft
+terminator tinted per body (warm on Rayleigh, blue on Nernst), limb darkening,
+a sub-solar sheen, and a lit limb; worlds with air also get haze thickening at
+the lit limb and a thread of airglow on the night limb. Geology is painted once
+per body into an offscreen surface from deterministic scatters (hashed
+positions, never a visible spiral) and stamped under the lighting each frame,
+so the flight view and the chart agree. Rayleigh is mottled like the key art:
+ragged dark uplands over soft halos, pale salt flats with hard coastlines and a
+cream glare, dry channels, six faint belts, polar hoods, two storms, city
+lights on its night side, and elevator threads with blinking counterweights.
+Nernst has blue-grey basins under frost plains, bright-edged fractures, a young
+rayed crater, and a frost cap. Roche is an irregular polygon with coarse
+regolith, a quarried flat face with bench lines, tunnel mouths, and two strings
+of blinking navigation lamps. Drawings live in `app/game/art/planets.ts`.
 
 **Naming.** The star is Cinder. Worlds are named for physicists whose work fits
 the body, kept a little obscure: Rayleigh (scattering, the amber sky), Nernst
@@ -99,6 +114,36 @@ every vehicle. They are what makes a shape feel driven rather than piloted.
 ## Paint
 
 Palette lives in `app/game/art/ships.ts` (`PAINT`) and `app/globals.css`.
+
+## Interface
+
+The menus are freight paperwork pinned to steel, not a holographic HUD. Rules
+in `app/globals.css`:
+
+- **Plates.** Panels are dark steel plates (`.plate`) with a twist-lock casting
+  in each corner, a faint brushed grain, and a hard ink drop shadow. No blur, no
+  glow. The dock panel, the chart and the guide wear a hazard-chevron band along
+  the top edge; the top bar carries a run of conspicuity tape.
+- **Registry plate.** The brand block is bone with ink lettering and an oxide
+  stripe, the same plate that sits on a cab roof.
+- **Switch plates.** Primary controls are amber plates with ink lettering, a
+  status lamp, and a 3px ink shadow that compresses on press. Card controls are
+  small dark plates with an amber lamp that fill amber under the hand. Keycaps
+  are bone with an ink shadow; emphasised keys are amber.
+- **Paperwork.** A contract is a manifest ticket: the cargo's own label stripe
+  down the left, a rotated oxide stamp for the contract kind (teal for
+  cryogenic), the reward as a price tag, the units drawn by the cargo art, and a
+  perforated tear line above the accept control. Locked tickets hatch their
+  stripe. Dock tabs are folder tabs; the active one is bone.
+- **Instruments.** Teal is reserved for telemetry: speed, range, propellant.
+  Gauges are strips of ten lamps. Hull is amber. Everything else on a panel is
+  bone, amber or oxide.
+- **Type.** Labels are stencil: bold monospace, uppercase, letterspaced, never
+  below 8px. The mono face is aliased on `body` (where next/font declares it),
+  not on `:root`, or the alias fails to resolve.
+- **Same drawings.** Anything the menus show that also flies is drawn by the
+  same code: ships on the shipyard cards, cargo on the manifests, planets on the
+  chart (`usePortrait` in `EmberlineGame.tsx`).
 
 | Use | Colour |
 | --- | --- |
