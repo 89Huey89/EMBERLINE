@@ -12,6 +12,7 @@ import {
   WORLD,
 } from "./data";
 import type { CargoKind, ContractDefinition, ShipDefinition, Station } from "./types";
+import { drawShipPortrait, shipArtFor } from "./art/ships";
 
 const TAU = Math.PI * 2;
 const SAVE_KEY = "emberline-save-v1";
@@ -309,6 +310,25 @@ function useAudio() {
   }, []);
 
   return useMemo(() => ({ ensure, setEngine, tone, mute }), [ensure, mute, setEngine, tone]);
+}
+
+function ShipPortrait({ ship }: { ship: ShipDefinition }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    drawShipPortrait(ctx, ship, width, height);
+  }, [ship]);
+  return <canvas ref={ref} className="ship-portrait" aria-hidden="true" />;
 }
 
 export default function EmberlineGame() {
@@ -770,9 +790,11 @@ export default function EmberlineGame() {
       });
 
       if (engineAmount > 0.2 && Math.random() < dt * 28) {
+        const art = shipArtFor(shipDef);
+        const exhaust = -art.exhaust * art.scale;
         game.particles.push({
-          x: game.ship.x - Math.cos(game.ship.angle) * 25,
-          y: game.ship.y - Math.sin(game.ship.angle) * 25,
+          x: game.ship.x - Math.cos(game.ship.angle) * exhaust,
+          y: game.ship.y - Math.sin(game.ship.angle) * exhaust,
           vx: game.ship.vx - Math.cos(game.ship.angle) * (45 + Math.random() * 35),
           vy: game.ship.vy - Math.sin(game.ship.angle) * (45 + Math.random() * 35),
           life: 0.7,
@@ -892,118 +914,36 @@ export default function EmberlineGame() {
 
     const drawShip = (ctx: CanvasRenderingContext2D, game: GameMutable, zoom: number) => {
       const ship = shipById(game.shipId);
-      const scale = ship.id === "courier" ? 0.9 : ship.id === "hauler" ? 1.35 : 1.12;
+      const art = shipArtFor(ship);
+      const thrusting = Boolean((keysRef.current.w || keysRef.current.arrowup) && game.ship.fuel > 0 && screen === "game");
       ctx.save();
       ctx.translate(game.ship.x, game.ship.y);
       ctx.rotate(game.ship.angle);
-      ctx.scale(scale, scale);
-      ctx.lineJoin = "round";
+      ctx.scale(art.scale, art.scale);
 
-      game.cargo.forEach((item, index) => {
-        const row = index % 2 === 0 ? -1 : 1;
-        const column = Math.floor(index / 2);
-        const x = -2 - column * 24;
-        const y = row * (ship.id === "hauler" ? 24 : 19);
-        ctx.strokeStyle = "#817158";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(x, row * 8);
-        ctx.lineTo(x, y - row * 9);
-        ctx.stroke();
-        ctx.save();
-        ctx.translate(x, y);
-        drawCargo(ctx, item.kind, ship.id === "hauler" ? 0.92 : 0.72, item.condition);
-        ctx.restore();
-      });
+      const paintCargo = () => {
+        game.cargo.forEach((item, index) => {
+          const at = art.clamps[index] ?? art.clamps[art.clamps.length - 1];
+          ctx.save();
+          ctx.translate(at.x, at.y);
+          drawCargo(ctx, item.kind, art.cargoScale, item.condition);
+          ctx.restore();
+        });
+      };
+      const paintClamps = () => {
+        const slots = ship.slots + (game.upgrades.includes("clamps") ? 1 : 0);
+        art.clamps.slice(0, slots).forEach((_, slot) => art.drawClamp?.(ctx, slot, slot < game.cargo.length));
+      };
 
-      if (game.upgrades.includes("tank")) {
-        ctx.fillStyle = "#4a5c5e";
-        ctx.beginPath();
-        ctx.roundRect(-22, -6, 32, 12, 6);
-        ctx.fill();
-        ctx.strokeStyle = "#8facaa";
-        ctx.stroke();
-      }
-
-      ctx.strokeStyle = "#655e51";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(-22, -11); ctx.lineTo(12, -11); ctx.lineTo(24, 0); ctx.lineTo(12, 11); ctx.lineTo(-22, 11);
-      ctx.stroke();
-      const hull = ctx.createLinearGradient(-20, -12, 22, 12);
-      hull.addColorStop(0, "#5f5c53");
-      hull.addColorStop(0.45, ship.color);
-      hull.addColorStop(1, "#857c69");
-      ctx.fillStyle = hull;
-      ctx.beginPath();
-      ctx.moveTo(-17, -10); ctx.lineTo(11, -10); ctx.lineTo(24, 0); ctx.lineTo(11, 10); ctx.lineTo(-17, 10); ctx.closePath();
-      ctx.fill();
-      ctx.strokeStyle = "#201f1b";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-
-      ctx.fillStyle = "#202728";
-      ctx.beginPath();
-      ctx.moveTo(11, -7); ctx.lineTo(20, -1); ctx.lineTo(11, -1); ctx.closePath(); ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(11, 7); ctx.lineTo(20, 1); ctx.lineTo(11, 1); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = "#d9b04c";
-      ctx.fillRect(2, -10, 3, 20);
-      ctx.fillStyle = "#ba5638";
-      ctx.fillRect(-4, -9, 2, 18);
-
-      ctx.fillStyle = "#272923";
-      ctx.beginPath();
-      ctx.moveTo(-18, -9); ctx.lineTo(-27, -13); ctx.lineTo(-27, 13); ctx.lineTo(-18, 9); ctx.closePath();
-      ctx.fill();
-      ctx.strokeStyle = "#80765f";
-      ctx.stroke();
-      ctx.fillStyle = "#c4743f";
-      ctx.fillRect(-29, -8, 4, 16);
-
-      const thrusting = keysRef.current.w || keysRef.current.arrowup;
-      if (thrusting && game.ship.fuel > 0 && screen === "game") {
-        const flame = ctx.createLinearGradient(-65, 0, -24, 0);
-        flame.addColorStop(0, "rgba(217,100,49,0)");
-        flame.addColorStop(0.65, "rgba(226,116,62,.75)");
-        flame.addColorStop(1, "#f7e0a4");
-        ctx.fillStyle = flame;
-        ctx.beginPath();
-        ctx.moveTo(-27, -7); ctx.lineTo(-50 - Math.random() * 12, 0); ctx.lineTo(-27, 7); ctx.closePath();
-        ctx.fill();
-      }
-
-      if (game.upgrades.includes("engine")) {
-        ctx.strokeStyle = "#d8a24b";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(-33, -10, 6, 20);
-      }
-      if (game.upgrades.includes("rcs")) {
-        ctx.fillStyle = "#6fa7a2";
-        ctx.fillRect(-10, -15, 7, 5);
-        ctx.fillRect(-10, 10, 7, 5);
-        ctx.fillRect(11, -12, 5, 4);
-        ctx.fillRect(11, 8, 5, 4);
-      }
-      if (game.upgrades.includes("scanner")) {
-        ctx.strokeStyle = "#c8b66b";
-        ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(2, -10); ctx.lineTo(5, -19); ctx.lineTo(9, -21); ctx.stroke();
-        ctx.beginPath(); ctx.arc(9, -21, 2, 0, TAU); ctx.stroke();
-      }
-      if (game.upgrades.includes("cryo")) {
-        ctx.strokeStyle = "#73c4c0";
-        ctx.beginPath(); ctx.moveTo(-5, 10); ctx.lineTo(-1, 16); ctx.lineTo(8, 16); ctx.stroke();
-      }
-
-      ctx.fillStyle = "#f6e8b4";
-      ctx.beginPath(); ctx.arc(17, -8, 1.5, 0, TAU); ctx.fill();
-      ctx.fillStyle = "#d44f36";
-      ctx.beginPath(); ctx.arc(17, 8, 1.5, 0, TAU); ctx.fill();
-      if (zoom > 0.75) {
-        ctx.fillStyle = "rgba(16,20,19,.7)";
-        ctx.font = "700 5px ui-monospace, monospace";
-        ctx.fillText(ship.model, -5, 2);
+      const state = { upgrades: game.upgrades, thrusting, showLabel: zoom > 0.75, time: game.elapsed };
+      if (art.cargoLayer === "under") {
+        paintClamps();
+        paintCargo();
+        art.drawHull(ctx, state);
+      } else {
+        art.drawHull(ctx, state);
+        paintCargo();
+        paintClamps();
       }
       ctx.restore();
     };
@@ -1403,7 +1343,7 @@ export default function EmberlineGame() {
                   <div className="ship-list">
                     {SHIPS.map((ship) => {
                       const owned = ui.ownedShips.includes(ship.id);
-                      return <article className={`${ui.shipId === ship.id ? "selected" : ""} ${!docked.services.includes("ships") ? "locked" : ""}`} key={ship.id}><div className={`ship-silhouette ${ship.id}`}><i /><i /><i /></div><span>{ship.role.toUpperCase()}</span><h3>{ship.name} <small>{ship.model}</small></h3><p>{ship.description}</p><div className="ship-stats"><span>{ship.slots} clamps</span><span>{ship.fuelCapacity} fuel</span><span>{ship.dryMass} t dry</span></div><button disabled={!docked.services.includes("ships") || ui.shipId === ship.id} onClick={() => buyOrSwitchShip(ship.id)}>{ui.shipId === ship.id ? "Active vessel" : owned ? "Move to active berth" : `Purchase · ${money(ship.cost)}`}</button></article>;
+                      return <article className={`${ui.shipId === ship.id ? "selected" : ""} ${!docked.services.includes("ships") ? "locked" : ""}`} key={ship.id}><ShipPortrait ship={ship} /><span>{ship.role.toUpperCase()}</span><h3>{ship.name} <small>{ship.model}</small></h3><p>{ship.description}</p><div className="ship-stats"><span>{ship.slots} clamps</span><span>{ship.fuelCapacity} fuel</span><span>{ship.dryMass} t dry</span></div><button disabled={!docked.services.includes("ships") || ui.shipId === ship.id} onClick={() => buyOrSwitchShip(ship.id)}>{ui.shipId === ship.id ? "Active vessel" : owned ? "Move to active berth" : `Purchase · ${money(ship.cost)}`}</button></article>;
                     })}
                   </div>
                 )}

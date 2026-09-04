@@ -150,18 +150,7 @@ button:disabled { opacity: .35; cursor: not-allowed; transform: none !important;
 .ship-list article.selected { box-shadow: inset 0 2px var(--amber); }
 .ship-list h3 small { color: var(--muted); font-family: var(--font-mono-ui), monospace; font-size: 8px; font-weight: 400; }
 .ship-list p { min-height: 57px; }
-.ship-silhouette { position: relative; height: 56px; margin-bottom: 13px; }
-.ship-silhouette::before { content: ""; position: absolute; top: 19px; left: 12%; width: 64%; height: 19px; background: #777363; clip-path: polygon(0 15%, 74% 15%, 100% 50%, 74% 85%, 0 85%); }
-.ship-silhouette::after { content: ""; position: absolute; top: 14px; left: 8%; width: 8px; height: 29px; background: var(--oxide); border: 2px solid #272a27; }
-.ship-silhouette i { position: absolute; top: 7px; left: 31%; width: 24px; height: 13px; border: 2px solid #635f52; }
-.ship-silhouette i:nth-child(2) { top: 36px; }
-.ship-silhouette i:nth-child(3) { display: none; }
-.ship-silhouette.freighter::before { width: 73%; }
-.ship-silhouette.freighter i:nth-child(3), .ship-silhouette.hauler i:nth-child(3) { display: block; top: 7px; left: 49%; }
-.ship-silhouette.hauler::before { width: 86%; height: 13px; top: 22px; }
-.ship-silhouette.hauler i { width: 34px; }
-.ship-silhouette.tug::before { width: 55%; height: 25px; top: 16px; background: #8a5b43; }
-.ship-silhouette.tug::after { width: 13px; }
+.ship-portrait { display: block; width: 100%; height: 96px; margin-bottom: 10px; }
 .ship-stats { display: flex; gap: 7px; margin: 11px 0; }
 .ship-stats span { padding: 5px 6px; border: 1px solid var(--line); color: var(--muted); font-family: var(--font-mono-ui), monospace; font-size: 6px; }
 
