@@ -1,4 +1,4 @@
-import type { CelestialBody, SalvageField, Station, StarSystem, Vec2 } from "./types";
+import type { CelestialBody, LineGate, SalvageField, Station, StarSystem, Vec2 } from "./types";
 
 const TAU = Math.PI * 2;
 
@@ -88,6 +88,17 @@ export function fieldPose(system: StarSystem, field: SalvageField, time: number)
   const primary = bodyById(system, field.orbit.around);
   if (!primary) return { ...STATIC, x: field.center.x, y: field.center.y };
   return orbitAbout(bodyPose(system, primary, time), primary.position, field.center, field.orbit.period, time);
+}
+
+/**
+ * A gate's position and velocity. Gates orbit like everything else, so the
+ * lane running out of one turns with it: a run-up flown a minute later is
+ * flown on a slightly different bearing.
+ */
+export function gatePose(system: StarSystem, gate: LineGate, time: number): Pose {
+  const primary = system.bodies.find((body) => body.id === gate.orbit.around);
+  if (!primary) return { ...STATIC, x: gate.position.x, y: gate.position.y };
+  return orbitAbout(bodyPose(system, primary, time), primary.position, gate.position, gate.orbit.period, time);
 }
 
 /** A station's lane radius around its own planet, for the chart and for tuning. */

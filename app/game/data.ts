@@ -302,6 +302,24 @@ const CINDER: StarSystem = {
       description: "A slow cloud of launch hardware, dead relays, and one persistent unknown return.",
     },
   ],
+  gates: [
+    {
+      id: "cinder-gate",
+      name: "Emberline Gate",
+      /* Rayleigh's lane, forty degrees ahead of the world — the opposite side
+         from the Wake, so the two never share space. */
+      position: { x: -5400, y: 6434 },
+      orbit: { around: "cinder-primary", period: 2467 },
+      bearingOffset: 0,
+      laneWidth: 500,
+      tolerance: 0.12,
+      threshold: 300,
+      spool: 12,
+      to: { system: "wien", gate: "wien-gate" },
+      transit: { seconds: 240, fuel: 30, hull: 6 },
+      description: "A swept lane running straight out of the system. Freight has left from here long enough to wear a road.",
+    },
+  ],
 };
 
 /**
@@ -311,7 +329,149 @@ const CINDER: StarSystem = {
  * `systemById` or `SYSTEMS` instead, so a second system needs no code change
  * anywhere else.
  */
-export const SYSTEMS: StarSystem[] = [CINDER];
+const WIEN_CONTRACTS: ContractDefinition[] = [
+  { id: "ore-slag", title: "Feed the kiln", kind: "standard", origin: "hollow", destination: "slagport", cargo: "ore", quantity: 2, baseReward: 1650, minReputation: 0, description: "Two cages of raw nickel out of Hollow Nine, before the furnace bank goes cold." },
+  { id: "food-hollow", title: "Down-shift provisions", kind: "fragile", origin: "slagport", destination: "hollow", cargo: "food", quantity: 1, baseReward: 1950, minReputation: 0, description: "Fresh stores for a crew three hundred metres inside a metal world. Keep them intact." },
+  { id: "water-slag", title: "Quench line", kind: "standard", origin: "longwinter", destination: "slagport", cargo: "water", quantity: 2, baseReward: 2450, minReputation: 0, description: "Process water hauled in from the ice, because Curie has none of its own." },
+  { id: "elx-longwinter", title: "Cold-side clock", kind: "express", origin: "hollow", destination: "longwinter", cargo: "electronics", quantity: 1, baseReward: 2900, timeLimit: 110, minReputation: 1, description: "A timing board for the cryo bank. The depot would rather not run it blind." },
+  { id: "metals-longwinter", title: "Depot spars", kind: "bulk", origin: "slagport", destination: "longwinter", cargo: "metals", quantity: 3, baseReward: 3600, minReputation: 2, minSlots: 3, description: "Refined stock for a berth extension that has been on the books for two winters." },
+  { id: "cryo-slag", title: "Sample chain", kind: "cryogenic", origin: "longwinter", destination: "slagport", cargo: "cryo", quantity: 2, baseReward: 5200, minReputation: 4, description: "Cultures grown in the cold and wanted warm. Powered handling required." },
+];
+
+/**
+ * The second system, and the proof that a system is data.
+ *
+ * Nothing here is code: Wien is another entry in SYSTEMS, its worlds pick
+ * surfaces that already exist, its ports pick modules that already exist, and
+ * the orbit, chart, contact and salvage code has never heard of it. It is
+ * deliberately tighter than Cinder — one metallic world close in and one ice
+ * world well out — so a pilot arriving from the Emberline finds a different
+ * shape of system rather than a copy of the one they left.
+ */
+const WIEN: StarSystem = {
+  id: "wien",
+  name: "The Wien system",
+  bounds: { width: 20000, height: 20000 },
+  bodies: [
+    {
+      id: "wien-primary",
+      name: "Wien",
+      kind: "system primary",
+      position: { x: 0, y: 0 },
+      radius: 620,
+      gravity: 18000000,
+      color: "#f2c877",
+      atmosphere: "#ffe1a6",
+      star: true,
+      description: "A smaller, whiter furnace than Cinder, and a good deal less patient with anything that drifts toward it.",
+    },
+    {
+      id: "curie",
+      name: "Curie",
+      kind: "metallic world",
+      position: { x: -3383, y: -1231 },
+      orbit: { around: "wien-primary", period: 660 },
+      surface: "metallic",
+      radius: 300,
+      gravity: 1700000,
+      color: "#7d6a55",
+      description: "Iron all the way down and warm enough at the surface to work in shirtsleeves, if the shirt is rated for it.",
+    },
+    {
+      id: "kelvin",
+      name: "Kelvin",
+      kind: "ice world",
+      position: { x: 4100, y: 7101 },
+      orbit: { around: "wien-primary", period: 2269 },
+      surface: "ice",
+      radius: 420,
+      gravity: 3300000,
+      color: "#7e929a",
+      atmosphere: "#a8c8cc",
+      description: "Blue-white and slow, holding the system's whole water budget in a shell nobody has finished surveying.",
+    },
+  ],
+  stations: [
+    {
+      id: "slagport",
+      name: "Slagport",
+      callSign: "SL-02",
+      kind: "ore refinery",
+      position: { x: -2311, y: -331 },
+      orbit: { around: "curie", period: 680 },
+      module: "kiln",
+      color: "#d2703f",
+      orientation: 0.42,
+      size: "large",
+      produces: ["metals", "components"],
+      consumes: ["ore", "water"],
+      services: ["contracts", "fuel", "repair"],
+      description: "Four furnace bays running on ice hauled from the far side of the system.",
+    },
+    {
+      id: "hollow",
+      name: "Hollow Nine",
+      callSign: "HN-7",
+      kind: "deep mining concern",
+      position: { x: -3725, y: -2171 },
+      orbit: { around: "curie", period: 520 },
+      module: "mine",
+      color: "#b07c48",
+      orientation: -0.31,
+      size: "standard",
+      produces: ["ore", "machinery"],
+      consumes: ["food", "components"],
+      services: ["contracts", "fuel"],
+      description: "A winch head over the ninth shaft, and a crew who measure distance in shifts rather than kilometres.",
+    },
+    {
+      id: "longwinter",
+      name: "Longwinter Depot",
+      callSign: "LW-11",
+      kind: "ice processing & fuel",
+      position: { x: 2974, y: 7751 },
+      orbit: { around: "kelvin", period: 630 },
+      module: "cryoworks",
+      cold: true,
+      color: "#78aab0",
+      orientation: 0.15,
+      size: "standard",
+      produces: ["water", "cryo"],
+      consumes: ["metals", "machinery"],
+      services: ["contracts", "fuel", "repair", "upgrades"],
+      description: "Teal lamps over a cryogenic farm, and the only yard in Wien that will fit a refit.",
+    },
+  ],
+  contracts: WIEN_CONTRACTS,
+  fields: [
+    {
+      id: "drift",
+      name: "The Drift",
+      center: { x: 8075, y: -1424 },
+      orbit: { around: "wien-primary", period: 2269 },
+      radius: 450,
+      description: "Shed shielding and spent stages, strung along Kelvin's lane where the freight decelerates.",
+    },
+  ],
+  gates: [
+    {
+      id: "wien-gate",
+      name: "Emberline Gate",
+      position: { x: 7921, y: 2122 },
+      orbit: { around: "wien-primary", period: 2269 },
+      bearingOffset: 0,
+      laneWidth: 500,
+      tolerance: 0.12,
+      threshold: 300,
+      spool: 12,
+      to: { system: "cinder", gate: "cinder-gate" },
+      transit: { seconds: 240, fuel: 30, hull: 6 },
+      description: "The far end of the same road. Shorter run-up out of Wien, and a colder wait if you miss it.",
+    },
+  ],
+};
+
+export const SYSTEMS: StarSystem[] = [CINDER, WIEN];
 
 /** Where a new shift starts, and what an unrecognised or missing save id falls back to. */
 export const DEFAULT_SYSTEM_ID = SYSTEMS[0].id;

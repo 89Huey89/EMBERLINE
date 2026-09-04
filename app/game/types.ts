@@ -178,6 +178,41 @@ export type SalvageField = {
  * wrong. Prefixing with the system, or simply naming things distinctly, both
  * work.
  */
+/**
+ * A line gate: where an interstellar run begins.
+ *
+ * Not a structure — a stretch of swept space with a lane running out of it.
+ * The drive can only catch the line from inside that lane, held straight and
+ * fast, which makes departure a piloting problem rather than a menu. The gate
+ * orbits like everything else, so the lane's bearing turns with it.
+ */
+export type LineGate = {
+  id: string;
+  name: string;
+  /** Position at the start of a shift; see CelestialBody.position for the convention. */
+  position: Vec2;
+  orbit: { around: string; period: number };
+  /**
+   * Lane bearing, as an offset from the outward radial at the gate. Zero runs
+   * straight away from the star, which is both the easiest bearing to read
+   * and the one that carries a ship clear of every well on the way out.
+   */
+  bearingOffset: number;
+  /** How far off the lane's centreline a ship may drift, in world units. */
+  laneWidth: number;
+  /** How far off the lane's bearing its velocity may point, in radians. */
+  tolerance: number;
+  /** Speed along the lane the drive needs before it can catch. */
+  threshold: number;
+  /** Seconds that has to be held, uninterrupted, before the line takes you. */
+  spool: number;
+  /** Where this line comes out. */
+  to: { system: string; gate: string };
+  /** What the crossing costs: shift time, propellant, and hull to the abrasion. */
+  transit: { seconds: number; fuel: number; hull: number };
+  description: string;
+};
+
 export type StarSystem = {
   id: string;
   name: string;
@@ -187,5 +222,7 @@ export type StarSystem = {
   stations: Station[];
   contracts: ContractDefinition[];
   fields: SalvageField[];
+  /** Where the interstellar lines leave from. Empty for a system nothing runs to. */
+  gates: LineGate[];
 };
 

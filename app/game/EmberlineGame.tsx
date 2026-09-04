@@ -8,7 +8,7 @@ import {
   UPGRADES,
   systemById,
 } from "./data";
-import type { CargoKind, ContractDefinition, SalvageField, ShipDefinition, Station, StarSystem, Vec2 } from "./types";
+import type { CargoKind, LineGate, ContractDefinition, SalvageField, ShipDefinition, Station, StarSystem, Vec2 } from "./types";
 import { drawCargoUnit } from "./art/cargo";
 import { drawDebrisChunk } from "./art/debris";
 import { ATMOSPHERE_TOP, drawPlanet, planetParallax, SURFACE_CONTACT } from "./art/planets";
@@ -16,7 +16,7 @@ import { CORONA_REACH, drawStar, starLight } from "./art/star";
 import { drawChart } from "./art/chart";
 import { drawShipPortrait, shipArtFor } from "./art/ships";
 import { BERTH_CAPTURE, berthPoint, drawStation, stationColliders } from "./art/stations";
-import { bodyOrbitRadius, bodyPose, fieldPose, orbitRadius, stationPose } from "./orbits";
+import { bodyOrbitRadius, bodyPose, fieldPose, gatePose, orbitRadius, stationPose } from "./orbits";
 
 const TAU = Math.PI * 2;
 const SAVE_KEY = "emberline-save-v1";
@@ -68,6 +68,22 @@ const TOW_FEE = 1200;
 const INSURANCE_EXCESS = 1400;
 /** The best-paying manifest dispatch will book to an overdrawn account. */
 const ARREARS_CEILING = 3000;
+
+/* ------------------------------------------------------------------ */
+/* The Emberline                                                        */
+/*                                                                      */
+/* Catching an interstellar line is a piloting problem, not a menu. The  */
+/* drive can only take hold inside a gate's lane, held straight and fast */
+/* for an unbroken stretch, which means getting clear of every well,     */
+/* lining up on a bearing that turns as the gate orbits, and spending    */
+/* the propellant to reach threshold with whatever mass is aboard. A     */
+/* loaded hauler cannot simply decide to leave.                          */
+/* ------------------------------------------------------------------ */
+
+/** How fast the spool bleeds back when the run-up falls out of tolerance. */
+const SPOOL_DECAY = 3;
+/** Shake above this reads as a real knock, and knocks break the spool outright. */
+const SPOOL_BREAK_SHAKE = 6;
 /**
  * Ceiling on gravitational acceleration, m/s².
  *
@@ -321,6 +337,8 @@ type GameMutable = {
   elapsed: number;
   lastSave: number;
   shake: number;
+  /** Seconds of unbroken run-up accumulated toward catching a line. */
+  spool: number;
   message: string;
   messageUntil: number;
 };
@@ -350,6 +368,28 @@ type UiSnapshot = {
   closing: number;
   /** Shift clock, so the chart can place a system that is still turning. */
   elapsed: number;
+  /**
+   * The nearest line gate's run-up, when one is close enough to matter. Null
+   * everywhere else, which is most of the time.
+   */
+  line: {
+    name: string;
+    to: string;
+    range: number;
+    lateral: number;
+    laneWidth: number;
+    speedAlong: number;
+    threshold: number;
+    drift: number;
+    tolerance: number;
+    inLane: boolean;
+    clear: boolean;
+    holding: boolean;
+    spool: number;
+    spoolNeeded: number;
+    /** True when an active manifest would be left behind by taking the line. */
+    stranding: boolean;
+  } | null;
   loadingRemaining: number;
 };
 
@@ -461,6 +501,7 @@ function freshGame(): GameMutable {
     elapsed: 0,
     lastSave: 0,
     shake: 0,
+    spool: 0,
     message: "Pilgrim traffic control welcomes Kestrel U-3.",
     messageUntil: 8,
   };
@@ -550,6 +591,44 @@ function stagedPickups(system: StarSystem, contract: ContractDefinition, station
   return units;
 }
 
+/**
+ * The lane running out of a gate, where it is now, and the ship's standing in it.
+ *
+ * The bearing is the outward radial at the gate plus the gate's own
+ * offset, so it turns as the gate orbits: line up a minute later and you
+ * line up on a slightly different heading.
+ */
+function laneStanding(system: StarSystem, gate: LineGate, ship: GameMutable["ship"], time: number) {
+  const star = system.bodies.find((body) => body.star);
+  const at = gatePose(system, gate, time);
+  const outward = star ? Math.atan2(at.y - star.position.y, at.x - star.position.x) : 0;
+  const bearing = outward + gate.bearingOffset;
+  const dx = Math.cos(bearing);
+  const dy = Math.sin(bearing);
+  const rx = ship.x - at.x;
+  const ry = ship.y - at.y;
+  /* Along the lane, and across it. A ship behind the gate is not in the
+     lane at all: the road only runs outward. */
+  const along = rx * dx + ry * dy;
+  const lateral = Math.abs(rx * -dy + ry * dx);
+  const speedAlong = ship.vx * dx + ship.vy * dy;
+  const speed = Math.hypot(ship.vx, ship.vy);
+  /* How far the ship's actual track points off the lane. Heading is not
+     tested: the drive catches the path a ship is on, not where its nose
+     happens to point. */
+  let drift = Math.PI;
+  if (speed > 1) {
+    const delta = Math.atan2(ship.vy, ship.vx) - bearing;
+    drift = Math.abs(Math.atan2(Math.sin(delta), Math.cos(delta)));
+  }
+  const inLane = along > -gate.laneWidth && lateral <= gate.laneWidth;
+  /* No well may be pulling. A line cannot be caught from inside one, and
+     the outward bearing is exactly the heading that gets a ship clear. */
+  const clear = !system.bodies.some((body) => distance(ship, bodyPose(system, body, time)) < body.radius * GRAVITY_REACH);
+  const holding = inLane && clear && speedAlong >= gate.threshold && drift <= gate.tolerance;
+  return { at, dx, dy, bearing, along, lateral, speedAlong, drift, inLane, clear, holding };
+}
+
 function snapshot(game: GameMutable): UiSnapshot {
   const system = activeSystem(game.systemId);
   const target = stationById(system, game.targetId);
@@ -578,6 +657,33 @@ function snapshot(game: GameMutable): UiSnapshot {
     distance: targetPose ? distance(game.ship, targetPose) : 0,
     closing: targetPose ? Math.hypot(game.ship.vx - targetPose.vx, game.ship.vy - targetPose.vy) : 0,
     elapsed: game.elapsed,
+    line: (() => {
+      /* Only shown when a gate is near enough to fly, so the panel does not
+         nag from the far side of a system. */
+      const near = system.gates
+        .map((gate) => ({ gate, standing: laneStanding(system, gate, game.ship, game.elapsed) }))
+        .filter((entry) => distance(game.ship, entry.standing.at) < entry.gate.laneWidth * 14)
+        .sort((a, b) => distance(game.ship, a.standing.at) - distance(game.ship, b.standing.at))[0];
+      if (!near) return null;
+      const destination = systemById(near.gate.to.system);
+      return {
+        name: near.gate.name,
+        to: destination?.name ?? near.gate.to.system,
+        range: distance(game.ship, near.standing.at),
+        lateral: near.standing.lateral,
+        laneWidth: near.gate.laneWidth,
+        speedAlong: near.standing.speedAlong,
+        threshold: near.gate.threshold,
+        drift: near.standing.drift,
+        tolerance: near.gate.tolerance,
+        inLane: near.standing.inLane,
+        clear: near.standing.clear,
+        holding: near.standing.holding,
+        spool: game.spool,
+        spoolNeeded: near.gate.spool,
+        stranding: Boolean(active),
+      };
+    })(),
     loadingRemaining: active ? Math.max(0, active.quantity - game.cargo.filter((item) => item.source === "contract").length) : 0,
   };
 }
@@ -1488,6 +1594,59 @@ export default function EmberlineGame() {
      * scanner upgrade), so an unlit chunk is invisible right up until it is
      * either close or scanned — not before.
      */
+    /**
+     * Take the line: hand the ship to the far gate, with the clock advanced.
+     *
+     * Advancing `elapsed` is the whole of the arrival. Every position in every
+     * system derives from it, so both the system left behind and the one
+     * arrived at have turned by exactly the crossing time — a lane costed
+     * before departure need not be the same lane on the other side.
+     */
+    const catchLine = (game: GameMutable, gate: LineGate) => {
+      const dest = systemById(gate.to.system);
+      const destGate = dest?.gates.find((g) => g.id === gate.to.gate);
+      if (!dest || !destGate) return notify("That line has no charted far end.");
+      game.elapsed += gate.transit.seconds;
+      game.systemId = dest.id;
+      game.spool = 0;
+      const arrival = laneStanding(dest, destGate, game.ship, game.elapsed);
+      /* Dropped out along the far lane and still moving: you arrive under way,
+         not parked, and the gate's own motion is already in it. */
+      game.ship.x = arrival.at.x + arrival.dx * destGate.laneWidth * 3;
+      game.ship.y = arrival.at.y + arrival.dy * destGate.laneWidth * 3;
+      game.ship.vx = arrival.at.vx + arrival.dx * destGate.threshold * 0.45;
+      game.ship.vy = arrival.at.vy + arrival.dy * destGate.threshold * 0.45;
+      game.ship.angle = arrival.bearing;
+      game.ship.av = 0;
+      game.ship.fuel = Math.max(0, game.ship.fuel - gate.transit.fuel);
+      game.ship.hull = Math.max(0, game.ship.hull - gate.transit.hull);
+      game.dockedId = null;
+      game.targetId = dest.stations[0].id;
+      /* The system you left keeps its loose freight and its debris. */
+      game.pickups = [];
+      game.debris = [];
+      salvageSeededRef.current = false;
+      audio.tone("dock", muted);
+      saveGame(game);
+      notify(`${gate.name} put you into ${dest.name}. ${gate.transit.seconds} s on the line, ${gate.transit.fuel} propellant and ${gate.transit.hull}% hull to the abrasion.`, 9);
+    };
+
+    /** Accumulates the run-up, and takes the line once it has been held long enough. */
+    const workTheLine = (game: GameMutable, system: StarSystem, dt: number) => {
+      if (game.dockedId || !system.gates.length) { game.spool = 0; return; }
+      const best = system.gates
+        .map((gate) => ({ gate, standing: laneStanding(system, gate, game.ship, game.elapsed) }))
+        .sort((a, b) => Number(b.standing.holding) - Number(a.standing.holding))[0];
+      if (!best.standing.holding) {
+        /* A knock breaks it outright; merely falling out of tolerance bleeds
+           it, so a moment's wobble costs time rather than the whole attempt. */
+        game.spool = game.shake > SPOOL_BREAK_SHAKE ? 0 : Math.max(0, game.spool - dt * SPOOL_DECAY);
+        return;
+      }
+      game.spool += dt;
+      if (game.spool >= best.gate.spool) catchLine(game, best.gate);
+    };
+
     const updateDebrisField = (game: GameMutable, dt: number) => {
       const system = activeSystem(game.systemId);
       const scanRange = game.upgrades.includes("scanner") ? 520 : 215;
@@ -1709,6 +1868,7 @@ export default function EmberlineGame() {
       }
       updateDebrisField(game, dt);
       resolveContacts(game, HULL_RADIUS[shipDef.size]);
+      workTheLine(game, system, dt);
 
       game.pickups.forEach((pickup) => {
         const held = pickup.anchor ? framePose(system, pickup.anchor.frame, game.elapsed) : null;
@@ -1910,6 +2070,49 @@ export default function EmberlineGame() {
         * top of the atmosphere, then the deck — and the deck brightens as
         * the ship closes on it, so the last ring is the loudest.
         */
+      /* Line gates: a marker, and the swept lane running out of the system.
+         Drawn under the traffic so a ship crossing it stays readable. */
+      system.gates.forEach((gate) => {
+        const st = laneStanding(system, gate, game.ship, game.elapsed);
+        const reach = 11000;
+        const nx = -st.dy;
+        const ny = st.dx;
+        const lit = st.inLane && st.clear;
+        context.lineWidth = 1 / cam.zoom;
+        context.strokeStyle = lit ? "rgba(220,169,82,.5)" : "rgba(220,169,82,.16)";
+        for (const side of [-1, 1]) {
+          context.beginPath();
+          context.moveTo(st.at.x + nx * gate.laneWidth * side, st.at.y + ny * gate.laneWidth * side);
+          context.lineTo(st.at.x + st.dx * reach + nx * gate.laneWidth * side, st.at.y + st.dy * reach + ny * gate.laneWidth * side);
+          context.stroke();
+        }
+        context.setLineDash([26 / cam.zoom, 34 / cam.zoom]);
+        context.strokeStyle = lit ? "rgba(244,199,106,.55)" : "rgba(220,169,82,.2)";
+        context.beginPath();
+        context.moveTo(st.at.x, st.at.y);
+        context.lineTo(st.at.x + st.dx * reach, st.at.y + st.dy * reach);
+        context.stroke();
+        context.setLineDash([]);
+        /* The gate itself: two open brackets, mouths facing down the lane. */
+        context.strokeStyle = "#dca952";
+        context.lineWidth = 2 / cam.zoom;
+        for (const side of [-1, 1]) {
+          const bx = st.at.x + nx * gate.laneWidth * side;
+          const by = st.at.y + ny * gate.laneWidth * side;
+          context.beginPath();
+          context.moveTo(bx - st.dx * gate.laneWidth * 0.35, by - st.dy * gate.laneWidth * 0.35);
+          context.lineTo(bx, by);
+          context.lineTo(bx + st.dx * gate.laneWidth * 0.5, by + st.dy * gate.laneWidth * 0.5);
+          context.stroke();
+        }
+        if (cam.zoom > 0.28) {
+          context.font = `${11 / cam.zoom}px ui-monospace, monospace`;
+          context.textAlign = "center";
+          context.fillStyle = "rgba(240,196,107,.8)";
+          context.fillText(gate.name.toUpperCase(), st.at.x, st.at.y - gate.laneWidth * 1.3);
+        }
+      });
+
       /* The lanes, faint enough to stay background: the worlds' around the
          star, the ports' around whichever world carries them. A planet's lane
          is fixed in space; a station's is drawn wherever its planet is now. */
@@ -2193,13 +2396,13 @@ export default function EmberlineGame() {
                   aria-expanded={!missionCollapsed}
                   aria-label={missionCollapsed ? "Expand active manifest" : "Collapse active manifest"}
                 >
-                  {missionCollapsed ? "\u25be" : "\u25b4"}
+                  {missionCollapsed ? "▾" : "▴"}
                 </button>
               </span>
             </div>
             <button type="button" className="mission-summary" onClick={() => setMissionCollapsed(false)}>
               <b>{active ? active.title : "Choose your next line"}</b>
-              <span>{active ? (ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(system, active.destination)?.callSign}`) : "Open system chart \u2192"}</span>
+              <span>{active ? (ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(system, active.destination)?.callSign}`) : "Open system chart →"}</span>
             </button>
             <div className="mission-detail">
               {active ? (
@@ -2209,10 +2412,10 @@ export default function EmberlineGame() {
                   <div className="manifest-line">
                     <CargoPortrait kind={active.cargo} count={active.quantity} condition={carriedCondition} />
                     <div>
-                      <b>{CARGO[active.cargo].name}</b>{CARGO[active.cargo].short} \u00d7 {active.quantity} \u00b7 {CARGO[active.cargo].mass * active.quantity} t
+                      <b>{CARGO[active.cargo].name}</b>{CARGO[active.cargo].short} × {active.quantity} · {CARGO[active.cargo].mass * active.quantity} t
                       {carriedFreight.length > 0 && (
                         <span className={`condition-readout ${carriedCondition < CONDITION_REJECT_THRESHOLD ? "danger" : carriedCondition < 0.8 ? "warn" : ""}`}>
-                          Condition {Math.round(carriedCondition * 100)}%{carriedCondition < CONDITION_REJECT_THRESHOLD ? " \u00b7 will be refused" : ""}
+                          Condition {Math.round(carriedCondition * 100)}%{carriedCondition < CONDITION_REJECT_THRESHOLD ? " · will be refused" : ""}
                         </span>
                       )}
                     </div>
@@ -2234,7 +2437,7 @@ export default function EmberlineGame() {
                 <>
                   <h2>Choose your next line</h2>
                   <p>Dock at a station to review local work, or set a course for The Wake and hunt salvage.</p>
-                  <button className="text-button" onClick={() => setMapOpen(true)}>Open system chart \u2192</button>
+                  <button className="text-button" onClick={() => setMapOpen(true)}>Open system chart →</button>
                 </>
               )}
             </div>
@@ -2312,6 +2515,19 @@ export default function EmberlineGame() {
             </section>
           )}
 
+          {!docked && ui.line && (
+            <aside className="line-card plate">
+              <div className="panel-kicker"><span>{ui.line.name}</span><span className="stamp">{ui.line.to}</span></div>
+              <div className="telemetry-row"><span>RANGE TO GATE</span><b>{Math.round(ui.line.range)} km</b></div>
+              <div className={`line-check ${ui.line.speedAlong >= ui.line.threshold ? "met" : ""}`}><span>LANE SPEED</span><b>{Math.round(ui.line.speedAlong)} / {ui.line.threshold}</b></div>
+              <div className={`line-check ${ui.line.inLane ? "met" : ""}`}><span>OFF CENTRE</span><b>{Math.round(ui.line.lateral)} / {ui.line.laneWidth}</b></div>
+              <div className={`line-check ${ui.line.drift <= ui.line.tolerance ? "met" : ""}`}><span>TRACK</span><b>{(ui.line.drift * 180 / Math.PI).toFixed(1)}° / {(ui.line.tolerance * 180 / Math.PI).toFixed(0)}°</b></div>
+              <div className={`line-check ${ui.line.clear ? "met" : ""}`}><span>CLEAR OF WELLS</span><b>{ui.line.clear ? "YES" : "NO"}</b></div>
+              <div className="bar-row"><span>DRIVE SPOOL</span><div className="meter line"><i style={{ width: `${clamp(ui.line.spool / ui.line.spoolNeeded * 100, 0, 100)}%` }} /></div><b>{ui.line.spool.toFixed(1)}s</b></div>
+              {ui.line.stranding && <small className="requirement">A manifest is aboard. Its deadline keeps running while you are on the line.</small>}
+            </aside>
+          )}
+
           {!docked && (
             <div className="flight-controls plate" aria-label="Flight controls">
               <div><kbd>A</kbd><kbd>D</kbd><span>ROTATE</span></div>
@@ -2349,7 +2565,7 @@ export default function EmberlineGame() {
       {mapOpen && (
         <section className="modal map-modal plate" role="dialog" aria-modal="true" aria-labelledby="map-title">
           <button className="modal-close" onClick={() => setMapOpen(false)}>Close <kbd>ESC</kbd></button>
-          <div className="map-copy"><p className="eyebrow">COMPRESSED NAVIGATION CHART / NOT TO SCALE</p><h2 id="map-title">{system.name}</h2><p>Three worlds around one star, and everything here is moving: ports around their world, worlds around Cinder, the inner lane fastest. The chart is schematic — what matters is that the run between two worlds lengthens and shortens as they pass, so a lane that is cheap this shift may be twice the distance the next.</p></div>
+          <div className="map-copy"><p className="eyebrow">COMPRESSED NAVIGATION CHART / NOT TO SCALE</p><h2 id="map-title">{system.name}</h2><p>{system.bodies.filter((body) => !body.star).length} worlds around one star, and everything here is moving: ports around their world, worlds around {system.bodies.find((body) => body.star)?.name ?? "the primary"}, the inner lane fastest. The chart is schematic — what matters is that the run between two worlds lengthens and shortens as they pass, so a lane that is cheap this shift may be twice the distance the next.</p></div>
           <SystemChart system={system} time={ui.elapsed} targetId={ui.targetId} onSelect={setTarget} />
           <div className="map-legend"><span><i className="legend-port" /> SELECT A PORT TO SET BEACON</span><span><i className="legend-wake" /> SALVAGE REGION</span><span>Current range to {target.callSign}: {Math.round(ui.distance)} km</span></div>
         </section>
@@ -2360,12 +2576,13 @@ export default function EmberlineGame() {
           <button className="modal-close" onClick={() => setHelpOpen(false)}>Close <kbd>ESC</kbd></button>
           <div className="guide-heading"><p className="eyebrow">KESTREL U-3 / QUICK REFERENCE</p><h2 id="guide-title">Momentum is the road.</h2><p>Thrust changes velocity. Releasing the controls does not stop the ship. Turn early, brake earlier, and arrive slowly.</p></div>
           <div className="guide-grid">
-            <article><span>01</span><h3>Take local work</h3><p>While docked, choose a manifest from the contract board. Repeated routes gradually pay less as local demand is met. Every manifest with a bonus window also carries a hard deadline well beyond it \u2014 miss that and the contract voids, but freight already aboard survives as marked-down salvage rather than being lost outright. Nobody dies out here \u2014 they go broke. A tow or a written-off hull is billed whether you can cover it or not, and an overdrawn account is held to small work until you fly it back.</p></article>
-            <article><span>02</span><h3>Secure the load</h3><p>Release the berth, drift within 92 m of each staged unit, match its speed, then press <kbd>SPACE</kbd>. Staged freight rides its pad around with the port. Cargo changes mass and handling \u2014 and fragile freight cannot take the main drive the way sturdier cargo can. A retro pair burns gently enough to slow a fragile load without marking it; a stock hull has to coast instead. The manifest card shows condition as you fly; arrive below half strength and the destination refuses the load outright, penalty included.</p></article>
-            <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward and <kbd>A</kbd>/<kbd>D</kbd> rotate. A stock hull only burns forward \u2014 turn the nose against your vector to slow down. A fitted retro pair adds <kbd>S</kbd> reverse, <kbd>Q</kbd>/<kbd>E</kbd> strafe and <kbd>SHIFT</kbd> assisted braking. The teal line is your true velocity. Burn, coast, flip, brake \u2014 a loaded round trip costs most of a tank, so the coast is free and the burn is not. Aim where the beacon is going, not where it sits.</p></article>
-            <article><span>04</span><h3>Make a clean arrival</h3><p>Ports orbit, and their worlds orbit too, so an arrival is a rendezvous with the sum of both. <b>CLOSING</b> on the panel is your speed relative to the pad, and it has to be under 36 m/s to clamp \u2014 matching a port\u2019s motion matters more than stopping, and a port on the fast inner world is the hardest to come alongside. Structure is solid: contact above 18 m/s costs hull, above 55 m/s it tears a container off the spine.</p></article>
+            <article><span>01</span><h3>Take local work</h3><p>While docked, choose a manifest from the contract board. Repeated routes gradually pay less as local demand is met. Every manifest with a bonus window also carries a hard deadline well beyond it — miss that and the contract voids, but freight already aboard survives as marked-down salvage rather than being lost outright. Nobody dies out here — they go broke. A tow or a written-off hull is billed whether you can cover it or not, and an overdrawn account is held to small work until you fly it back.</p></article>
+            <article><span>02</span><h3>Secure the load</h3><p>Release the berth, drift within 92 m of each staged unit, match its speed, then press <kbd>SPACE</kbd>. Staged freight rides its pad around with the port. Cargo changes mass and handling — and fragile freight cannot take the main drive the way sturdier cargo can. A retro pair burns gently enough to slow a fragile load without marking it; a stock hull has to coast instead. The manifest card shows condition as you fly; arrive below half strength and the destination refuses the load outright, penalty included.</p></article>
+            <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward and <kbd>A</kbd>/<kbd>D</kbd> rotate. A stock hull only burns forward — turn the nose against your vector to slow down. A fitted retro pair adds <kbd>S</kbd> reverse, <kbd>Q</kbd>/<kbd>E</kbd> strafe and <kbd>SHIFT</kbd> assisted braking. The teal line is your true velocity. Burn, coast, flip, brake — a loaded round trip costs most of a tank, so the coast is free and the burn is not. Aim where the beacon is going, not where it sits.</p></article>
+            <article><span>04</span><h3>Make a clean arrival</h3><p>Ports orbit, and their worlds orbit too, so an arrival is a rendezvous with the sum of both. <b>CLOSING</b> on the panel is your speed relative to the pad, and it has to be under 36 m/s to clamp — matching a port’s motion matters more than stopping, and a port on the fast inner world is the hardest to come alongside. Structure is solid: contact above 18 m/s costs hull, above 55 m/s it tears a container off the spine.</p></article>
             <article><span>05</span><h3>Respect the deck</h3><p>The red ring is a surface and it is solid. The dashed ring above it is atmosphere: drag and heat, survivable briefly, useful for shedding speed. Loaded, you cannot climb straight out of a deep well. Cinder itself carries the same rings and nothing forgiving inside them.</p></article>
-            <article><span>06</span><h3>Work The Wake</h3><p>A slow debris field keeps station with Rayleigh, trailing it around the same lane, and it is solid \u2014 the same closing-speed rule that governs a station or a planet governs it. A scanner shows it from 520 units out instead of 215; without one, flying in fast is a gamble. Salvage pays well, and something worth more sits deep in the field.</p></article>
+            <article><span>06</span><h3>Work The Wake</h3><p>A slow debris field keeps station with Rayleigh, trailing it around the same lane, and it is solid — the same closing-speed rule that governs a station or a planet governs it. A scanner shows it from 520 units out instead of 215; without one, flying in fast is a gamble. Salvage pays well, and something worth more sits deep in the field.</p></article>
+            <article><span>07</span><h3>Catch the Emberline</h3><p>A line gate sits out past the lanes, with a swept road running straight away from the star. To leave the system you have to be in that road, clear of every well, tracking down it within a few degrees and above its threshold speed — and hold all four for a stretch. The panel lists them; the spool only fills while every line is green. A knock breaks it outright, a wobble only bleeds it. Loaded, reaching threshold at all is most of the work, which is the point: a full hauler cannot simply decide to leave.</p></article>
           </div>
           <button className="primary-button" onClick={() => setHelpOpen(false)}>Return to the flight deck <span>→</span></button>
         </section>
