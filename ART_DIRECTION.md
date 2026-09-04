@@ -35,6 +35,35 @@ Role changes proportion, not vocabulary. A courier has a short spine and one
 drum. A hauler has a long spine and several. A tug has a short spine, an
 oversized drum, and a grapple instead of cradles.
 
+## Containers
+
+One family of sage-green steel freight hardware. Cargo type is told by the shape
+(crate, tank, ore bin, machine on a flatrack), a label stripe in the cargo's
+accent colour at the rear end, the stencil code, and visible contents. Every unit
+has corner castings, conspicuity tape along the bottom edge, two amber corner
+markers at the front, and one status light at the rear: amber steady when sound,
+red blinking when damaged, teal blinking when it is a powered cryogenic unit.
+Wear is rust spots that grow as condition drops. Drawings live in
+`app/game/art/cargo.ts`.
+
+## Stations
+
+Stations are scaffold. A long main truss boom carries a hub (dome, module block,
+two tanks), dark-red radiators, a lattice mast with a dish and a red beacon, and
+a dark solar array at the far end. Warm work lights run along the boom; cold
+stations (Bluehour, Quiet Arc) use teal instead of amber. Size changes the scale
+of the body only.
+
+The berth is the most readable thing on a station. It sits on the arm opposite
+the solar array, at a fixed distance from the hub that never scales, as a lit
+rectangular bay: a dashed bone outline, a berth mark, six chasing edge lights,
+a five-light approach lane strobing inward, and two floodlight cones. Every
+station shows a faint capture envelope; the targeted station's envelope is
+dashed and coloured by state: red when the ship is too fast to dock, amber on
+approach, teal when a dock is possible. Ships dock, undock and stage cargo
+relative to the berth, so the pad always tells the truth. Drawings live in
+`app/game/art/stations.ts`.
+
 ## Trucking cues
 
 Amber marker lights, red tail lights, hazard chevrons on the bumper, a stripe on
@@ -69,8 +98,9 @@ nothing else. Warm colours belong to structure and light.
 ## Order of work
 
 1. Kestrel U-3 (starting ship) — done.
-2. Cargo containers: one shared container body per shape, colour-coded by a
-   label stripe rather than the whole box.
-3. Mule, Atlas, Mastiff on the same vocabulary.
-4. Stations as scaffold: masts, tanks, panels, warm work lights.
-5. Title composition to match the key art (ship low-left, station, planet).
+2. Cargo containers — done.
+3. Stations and berths — done.
+4. Title composition to match the key art — done.
+5. Mule, Atlas, Mastiff on the same vocabulary.
+6. Planets: fewer stripe ellipses, a real terminator, city lights on Cinder.
+7. The Wake: debris built from the same parts vocabulary.
