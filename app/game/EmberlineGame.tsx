@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   CARGO,
   DEFAULT_SYSTEM_ID,
@@ -876,6 +876,22 @@ function usePortrait(paint: (ctx: CanvasRenderingContext2D, width: number, heigh
   return ref;
 }
 
+/**
+ * Narrow screens, and touch screens on their side, get the cockpit layout (one
+ * instrument dash above the window, one control console below or beside it)
+ * instead of the desktop's floating plates. The query matches the cockpit
+ * block in globals.css.
+ */
+const MOBILE_QUERY = "(max-width: 760px), (pointer: coarse) and (max-height: 540px)";
+const subscribeMobileLayout = (onChange: () => void) => {
+  const query = window.matchMedia(MOBILE_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+};
+function useMobileLayout() {
+  return useSyncExternalStore(subscribeMobileLayout, () => window.matchMedia(MOBILE_QUERY).matches, () => false);
+}
+
 function ShipPortrait({ ship }: { ship: ShipDefinition }) {
   const ref = usePortrait((ctx, width, height) => drawShipPortrait(ctx, ship, width, height), [ship]);
   return <canvas ref={ref} className="ship-portrait portrait" aria-hidden="true" />;
@@ -959,9 +975,14 @@ export default function EmberlineGame() {
   /** What last took hull off the ship, so a loss can say what caused it. */
   const lastHarmRef = useRef("a hard contact");
   const cameraRef = useRef({ x: -320, y: 30, zoom: 0.78 });
+  /*
+   * The furniture that can cover the canvas: the dock panel, and on the
+   * cockpit layout the dash and the console. Their rectangles are measured
+   * each frame so the ship is always centred in whatever window is left.
+   */
   const dockPanelRef = useRef<HTMLElement | null>(null);
-  /** Height of the strip above the dock panel, in CSS px; 0 means "use the full canvas". */
-  const viewHeightRef = useRef(0);
+  const dashRef = useRef<HTMLElement | null>(null);
+  const consoleRef = useRef<HTMLDivElement | null>(null);
   const titlePoseRef = useRef<ShipPose | null>(null);
   const starRef = useRef(Array.from({ length: 340 }, (_, index) => ({
     x: ((index * 1877) % 10000) / 10000,
@@ -973,10 +994,9 @@ export default function EmberlineGame() {
   const [screen, setScreen] = useState<"title" | "game">("title");
   const [ui, setUi] = useState<UiSnapshot>(() => snapshot(gameRef.current));
   const [panel, setPanel] = useState<"contracts" | "service" | "fleet">("contracts");
-  /** Collapses the mission card to a one-line strip. Only has a visual effect on narrow (mobile) layouts. */
-  const [missionCollapsed, setMissionCollapsed] = useState(true);
-  /** Collapses the gate-line card to a one-line strip. Only has a visual effect on narrow (mobile) layouts. */
-  const [lineCollapsed, setLineCollapsed] = useState(true);
+  /** Which ledger cell of the mobile dash is unfolded into a drawer, if any. Desktop shows both plates permanently. */
+  const [drawer, setDrawer] = useState<"mission" | "gate" | null>(null);
+  const mobile = useMobileLayout();
   const [mapOpen, setMapOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -990,19 +1010,6 @@ export default function EmberlineGame() {
     game.messageUntil = game.elapsed + duration;
     setUi(snapshot(game));
   }, []);
-
-  /** Re-measures the strip above the dock panel. Cheap, but only worth calling when that layout can have changed. */
-  const measureDockPanel = useCallback(() => {
-    const canvas = canvasRef.current;
-    const panel = dockPanelRef.current;
-    viewHeightRef.current = canvas && panel ? Math.max(120, panel.getBoundingClientRect().top - canvas.getBoundingClientRect().top) : 0;
-  }, []);
-
-  /** Stable ref callback: React only invokes it when the panel mounts or unmounts (dock / undock), never on re-render. */
-  const setDockPanelNode = useCallback((node: HTMLElement | null) => {
-    dockPanelRef.current = node;
-    measureDockPanel();
-  }, [measureDockPanel]);
 
   useEffect(() => {
     setHasSave(Boolean(localStorage.getItem(SAVE_KEY)));
@@ -1974,8 +1981,35 @@ export default function EmberlineGame() {
         canvas.width = width;
         canvas.height = height;
       }
-      const viewHeight = viewHeightRef.current || rect.height;
-      return { width: rect.width, height: rect.height, dpr, viewHeight };
+      /*
+       * The window: whatever part of the canvas the furniture leaves clear.
+       * The dash takes the top; the console and the dock panel take the
+       * bottom when they run the full width, or the right edge when they
+       * stand beside the window (a phone on its side). The ship is drawn at
+       * the window's centre and the beacon marker is clamped to its edges.
+       */
+      const view = { left: 0, top: 0, right: rect.width, bottom: rect.height };
+      const dash = dashRef.current;
+      if (dash) view.top = Math.max(view.top, dash.getBoundingClientRect().bottom - rect.top);
+      for (const node of [consoleRef.current, dockPanelRef.current]) {
+        if (!node) continue;
+        const box = node.getBoundingClientRect();
+        if (box.width <= rect.width * 0.6) {
+          view.right = Math.min(view.right, box.left - rect.left);
+        } else if (box.height <= rect.height * 0.5) {
+          view.bottom = Math.min(view.bottom, box.top - rect.top);
+        } else {
+          /* a full-size console is the pod layout: its keys sit at either edge and the window is what lies between them */
+          for (const key of Array.from(node.children)) {
+            const keyBox = key.getBoundingClientRect();
+            if (keyBox.left + keyBox.width / 2 < rect.left + rect.width / 2) view.left = Math.max(view.left, keyBox.right - rect.left);
+            else view.right = Math.min(view.right, keyBox.left - rect.left);
+          }
+        }
+      }
+      view.bottom = Math.max(view.bottom, view.top + 120);
+      view.right = Math.max(view.right, view.left + 120);
+      return { width: rect.width, height: rect.height, dpr, view };
     };
 
     const drawCargo = (ctx: CanvasRenderingContext2D, kind: CargoKind, size = 1, condition = 1) => {
@@ -2019,8 +2053,10 @@ export default function EmberlineGame() {
       ctx.restore();
     };
 
-    const draw = (game: GameMutable, dims: { width: number; height: number; dpr: number; viewHeight: number }) => {
-      const { width, height, dpr, viewHeight } = dims;
+    const draw = (game: GameMutable, dims: { width: number; height: number; dpr: number; view: { left: number; top: number; right: number; bottom: number } }) => {
+      const { width, height, dpr, view } = dims;
+      const centerX = (view.left + view.right) / 2;
+      const centerY = (view.top + view.bottom) / 2;
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       context.clearRect(0, 0, width, height);
       const bg = context.createRadialGradient(width * 0.7, height * 0.25, 0, width * 0.5, height * 0.5, width);
@@ -2060,7 +2096,7 @@ export default function EmberlineGame() {
       });
 
       context.save();
-      context.translate(width / 2 + shakeX, viewHeight / 2 + shakeY);
+      context.translate(centerX + shakeX, centerY + shakeY);
       context.scale(cam.zoom, cam.zoom);
       context.translate(-cam.x, -cam.y);
 
@@ -2286,14 +2322,14 @@ export default function EmberlineGame() {
       context.restore();
 
       if (!game.dockedId && targetPose) {
-        const tx = (targetPose.x - cam.x) * cam.zoom + width / 2;
-        const ty = (targetPose.y - cam.y) * cam.zoom + height / 2;
-        if (tx < 60 || tx > width - 60 || ty < 80 || ty > height - 70) {
-          const cx = width / 2;
-          const cy = height / 2;
+        const tx = (targetPose.x - cam.x) * cam.zoom + centerX;
+        const ty = (targetPose.y - cam.y) * cam.zoom + centerY;
+        if (tx < view.left + 60 || tx > view.right - 60 || ty < view.top + 60 || ty > view.bottom - 60) {
+          const cx = centerX;
+          const cy = centerY;
           const angle = Math.atan2(ty - cy, tx - cx);
-          const radiusX = width / 2 - 48;
-          const radiusY = height / 2 - 70;
+          const radiusX = (view.right - view.left) / 2 - 40;
+          const radiusY = (view.bottom - view.top) / 2 - 40;
           const factor = Math.min(Math.abs(radiusX / Math.cos(angle)), Math.abs(radiusY / Math.sin(angle)));
           const x = cx + Math.cos(angle) * factor;
           const y = cy + Math.sin(angle) * factor;
@@ -2343,8 +2379,149 @@ export default function EmberlineGame() {
   /** 1 before anything is clamped, so the manifest starts looking pristine rather than warned-about. */
   const carriedCondition = carriedFreight.length ? carriedFreight.reduce((sum, item) => sum + item.condition, 0) / carriedFreight.length : 1;
 
+  /** Press-and-hold handlers for a console key: the key is down while the finger is on it, released when it lifts or leaves. */
+  const holdKey = (key: string) => {
+    const release = (event: React.PointerEvent<HTMLButtonElement>) => {
+      event.currentTarget.classList.remove("down");
+      setTouch(key, false);
+    };
+    return {
+      onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
+        if (event.currentTarget.disabled) return;
+        event.preventDefault();
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        event.currentTarget.classList.add("down");
+        setTouch(key, true);
+      },
+      onPointerUp: release,
+      onPointerCancel: release,
+      onPointerLeave: release,
+    };
+  };
+  const toggleAssist = () => { gameRef.current.assist = !gameRef.current.assist; setUi(snapshot(gameRef.current)); };
+  const toggleMute = () => { setMuted((value) => { audio.mute(!value); return !value; }); };
+  const nextAction = active ? (ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(system, active.destination)?.callSign}`) : "Open the system chart";
+  /** The gate drawer only makes sense while a line is in range and the ship is flying. */
+  const openDrawer = drawer === "gate" && (docked || !ui.line) ? null : drawer;
+
+  /* ---- fragments shared by the desktop deck and the mobile cockpit ---- */
+
+  const missionDetail = active ? (
+    <>
+      <h2>{active.title}</h2>
+      <p>{active.description}</p>
+      <div className="manifest-line">
+        <CargoPortrait kind={active.cargo} count={active.quantity} condition={carriedCondition} />
+        <div>
+          <b>{CARGO[active.cargo].name}</b>{CARGO[active.cargo].short} × {active.quantity} · {CARGO[active.cargo].mass * active.quantity} t
+          {carriedFreight.length > 0 && (
+            <span className={`condition-readout ${carriedCondition < CONDITION_REJECT_THRESHOLD ? "danger" : carriedCondition < 0.8 ? "warn" : ""}`}>
+              Condition {Math.round(carriedCondition * 100)}%{carriedCondition < CONDITION_REJECT_THRESHOLD ? " · will be refused" : ""}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="route-line"><span>{stationById(system, active.origin)?.callSign}</span><i /><span>{stationById(system, active.destination)?.callSign}</span></div>
+      <div className="objective">
+        <small>NEXT ACTION</small>
+        <strong>{ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(system, active.destination)?.name}`}</strong>
+      </div>
+      {active.timeLimit && (
+        <>
+          <div className={`timer ${ui.contractTime < 30 ? "urgent" : ""}`}><span>TIME BONUS</span><b>{seconds(ui.contractTime)}</b></div>
+          <div className={`timer deadline ${ui.contractDeadline < DEADLINE_WARNING_WINDOW ? "urgent" : ""}`}><span>HARD DEADLINE</span><b>{seconds(ui.contractDeadline)}</b></div>
+        </>
+      )}
+      <button className="text-button danger" onClick={abandonContract}>Abandon contract</button>
+    </>
+  ) : (
+    <>
+      <h2>Choose your next line</h2>
+      <p>Dock at a station to review local work, or set a course for The Wake and hunt salvage.</p>
+      <button className="text-button" onClick={() => setMapOpen(true)}>Open system chart →</button>
+    </>
+  );
+
+  const gateDetail = ui.line && (
+    <>
+      <div className="telemetry-row"><span>RANGE TO GATE</span><b>{Math.round(ui.line.range)} km</b></div>
+      <div className={`line-check ${ui.line.speedAlong >= ui.line.threshold ? "met" : ""}`}><span>LANE SPEED</span><b>{Math.round(ui.line.speedAlong)} / {ui.line.threshold}</b></div>
+      <div className={`line-check ${ui.line.inLane ? "met" : ""}`}><span>OFF CENTRE</span><b>{Math.round(ui.line.lateral)} / {ui.line.laneWidth}</b></div>
+      <div className={`line-check ${ui.line.drift <= ui.line.tolerance ? "met" : ""}`}><span>TRACK</span><b>{(ui.line.drift * 180 / Math.PI).toFixed(1)}° / {(ui.line.tolerance * 180 / Math.PI).toFixed(0)}°</b></div>
+      <div className={`line-check ${ui.line.clear ? "met" : ""}`}><span>CLEAR OF WELLS</span><b>{ui.line.clear ? "YES" : "NO"}</b></div>
+      <div className="bar-row"><span>DRIVE SPOOL</span><div className="meter line"><i style={{ width: `${clamp(ui.line.spool / ui.line.spoolNeeded * 100, 0, 100)}%` }} /></div><b>{ui.line.spool.toFixed(1)}s</b></div>
+      {ui.line.stranding && <small className="requirement">A manifest is aboard. Its deadline keeps running while you are on the line.</small>}
+    </>
+  );
+
+  const propellantGauge = (label: string) => <div className="bar-row"><span>{label}</span><div className="meter"><i style={{ width: `${clamp(ui.fuel / fuelCapacity * 100, 0, 100)}%` }} /></div><b>{Math.round(ui.fuel)}</b></div>;
+  const hullGauge = <div className="bar-row"><span>HULL</span><div className="meter hull"><i style={{ width: `${ui.hull}%` }} /></div><b>{Math.round(ui.hull)}%</b></div>;
+
+  const dockPanel = docked && (
+    <section className="dock-panel plate" ref={dockPanelRef}>
+      <div className="dock-heading">
+        <div>
+          <span>BERTHED AT {docked.callSign}</span>
+          <h2>{docked.name}</h2>
+          <small className="kind">{docked.kind}</small>
+          <p>{docked.description}</p>
+          <div className="services">{docked.services.map((item) => <span className="tag" key={item}>{item}</span>)}</div>
+        </div>
+        <button className="primary-button compact" onClick={undock}>Release berth <span>→</span></button>
+      </div>
+      <div className="dock-tabs" role="tablist">
+        <button className={panel === "contracts" ? "active" : ""} onClick={() => setPanel("contracts")}>Contract board</button>
+        <button className={panel === "service" ? "active" : ""} onClick={() => setPanel("service")}>Service & refit</button>
+        <button className={panel === "fleet" ? "active" : ""} onClick={() => setPanel("fleet")}>Shipyard</button>
+      </div>
+      <div className="dock-content">
+        {panel === "contracts" && (
+          <div className="contract-list">
+            {contractsHere.map((contract) => {
+              const reward = rewardFor(contract, gameRef.current.routeRuns);
+              const withheld = ui.credits < 0 && contract.baseReward > ARREARS_CEILING;
+              const locked = withheld || ui.reputation < contract.minReputation || Boolean(contract.requiredShip && contract.requiredShip !== ui.shipId) || (contract.kind === "cryogenic" && !ui.upgrades.includes("cryo")) || (contract.minSlots ?? contract.quantity) > currentShip.slots + (ui.upgrades.includes("clamps") ? 1 : 0);
+              const cargo = CARGO[contract.cargo];
+              return (
+                <article className={`contract ${locked ? "locked" : ""}`} key={contract.id} style={{ "--accent": cargo.accent } as React.CSSProperties}>
+                  <div className="contract-top"><span className={`stamp ${contract.kind === "cryogenic" ? "cold" : ""}`}>{contract.kind}</span><b>{money(reward)}</b></div>
+                  <div className="contract-body">
+                    <div><h3>{contract.title}</h3><p>{contract.description}</p></div>
+                    <CargoPortrait kind={contract.cargo} count={contract.quantity} />
+                  </div>
+                  <div className="manifest"><span>{cargo.short} × {contract.quantity}</span><span>{cargo.mass * contract.quantity} t</span><span>{stationById(system, contract.origin)?.callSign} → {stationById(system, contract.destination)?.callSign}</span>{contract.timeLimit && <span>{seconds(contract.timeLimit)} bonus window</span>}</div>
+                  <div className="tear" aria-hidden="true" />
+                  {withheld ? <small className="requirement">Withheld while the account is overdrawn</small> : locked ? <small className="requirement">Requires rep {contract.minReputation}{contract.requiredShip ? ` · ${shipById(contract.requiredShip).name}` : ""}{contract.kind === "cryogenic" ? " · Cryo umbilical" : ""}{(contract.minSlots ?? contract.quantity) > currentShip.slots + (ui.upgrades.includes("clamps") ? 1 : 0) ? ` · ${contract.minSlots ?? contract.quantity} clamps` : ""}</small> : <button disabled={Boolean(ui.activeContractId)} onClick={() => stageContract(contract)}>Accept manifest</button>}
+                </article>
+              );
+            })}
+          </div>
+        )}
+        {panel === "service" && (
+          <div className="service-grid">
+            <article><span>PROPELLANT</span><h3>{Math.round(ui.fuel)} / {Math.round(fuelCapacity)}</h3><p>{ui.credits < 0 ? "Refined monopropellant. The yard meters it onto your tab until the account is square — you can always fly." : "Refined monopropellant, metered at this port’s posted rate."}</p><button onClick={() => service("fuel")}>Fill tanks · {money(Math.ceil((fuelCapacity - ui.fuel) * 4))}</button></article>
+            <article><span>HULL & RIGGING</span><h3>{Math.round(ui.hull)}% integrity</h3><p>{ui.credits < 0 ? "Pressure shell, radiator, clamp, and RCS inspection. Withheld until the account is settled." : "Pressure shell, radiator, clamp, and RCS inspection."}</p><button disabled={ui.credits < 0} onClick={() => service("repair")}>Authorize work · {money(Math.ceil((100 - ui.hull) * 18))}</button></article>
+            {UPGRADES.map((upgrade) => (
+              <article className={`${!docked.services.includes("upgrades") || ui.credits < 0 ? "locked" : ""} ${ui.upgrades.includes(upgrade.id) ? "fitted" : ""}`} key={upgrade.id}><span>{ui.upgrades.includes(upgrade.id) ? "INSTALLED" : "SHIP REFIT"}</span><h3>{upgrade.name}</h3><p>{upgrade.description}</p>{ui.upgrades.includes(upgrade.id) ? <small className="installed">Hardware fitted</small> : <button disabled={!docked.services.includes("upgrades") || ui.credits < 0} onClick={() => buyUpgrade(upgrade.id)}>Install · {money(upgrade.cost)}</button>}</article>
+            ))}
+          </div>
+        )}
+        {panel === "fleet" && (
+          <div className="ship-list">
+            {SHIPS.map((ship) => {
+              const owned = ui.ownedShips.includes(ship.id);
+              return <article className={`${ui.shipId === ship.id ? "selected" : ""} ${!docked.services.includes("ships") ? "locked" : ""}`} key={ship.id}><ShipPortrait ship={ship} /><span>{ship.role.toUpperCase()}</span><h3>{ship.name} <small>{ship.model}</small></h3><p>{ship.description}</p><div className="ship-stats"><span>{ship.slots} clamps</span><span>{ship.fuelCapacity} fuel</span><span>{ship.dryMass} t dry</span></div><button disabled={!docked.services.includes("ships") || ui.shipId === ship.id || (!owned && ui.credits < 0)} onClick={() => buyOrSwitchShip(ship.id)}>{ui.shipId === ship.id ? "Active vessel" : owned ? "Move to active berth" : `Purchase · ${money(ship.cost)}`}</button></article>;
+            })}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+
+  const radioToast = ui.message && gameRef.current.elapsed < gameRef.current.messageUntil && <div className="radio-toast"><span>PILGRIM NET</span><p>{ui.message}</p></div>;
+
   return (
-    <main className={`game-shell ${screen === "title" ? "is-title" : "is-playing"}`}>
+    <main className={`game-shell ${screen === "title" ? "is-title" : "is-playing"} ${mobile ? "is-cockpit" : ""} ${docked ? "is-docked" : ""}`}>
       <canvas ref={canvasRef} className="space-canvas" aria-label="The Cinder star system flight view" />
       <div className="scanline" aria-hidden="true" />
 
@@ -2369,7 +2546,107 @@ export default function EmberlineGame() {
         </section>
       )}
 
-      {screen === "game" && (
+      {/*
+        * The cockpit. On a phone the flight deck is one instrument: a dash
+        * pinned along the top (registry, account, the utilities, speed, range,
+        * the two gauges, and a ledger strip that unfolds the manifest or the
+        * gate checklist), the window in the middle, and the control console
+        * along the bottom. Nothing floats over the window.
+        */}
+      {screen === "game" && mobile && (
+        <>
+          <div className="cockpit-rails" aria-hidden="true" />
+          <header className="dash plate" ref={dashRef}>
+            <div className="dash-top">
+              <div className="dash-brand"><b>EMBERLINE</b><span>{currentShip.name.toUpperCase()} {currentShip.model}</span></div>
+              <div className="dash-account"><span>{ui.credits < 0 ? "IN ARREARS" : "ACCOUNT"}</span><strong className={ui.credits < 0 ? "arrears" : ""}>{money(ui.credits)}</strong></div>
+              <nav className="dash-nav" aria-label="Game utilities">
+                <button onClick={() => setMapOpen(true)} aria-label="Open system chart">MAP</button>
+                <button onClick={() => setHelpOpen(true)} aria-label="Open guide">HELP</button>
+                <button className={muted ? "off" : ""} aria-label={muted ? "Enable audio" : "Mute audio"} aria-pressed={muted} onClick={toggleMute}>{muted ? "MUTE" : "SND"}</button>
+              </nav>
+            </div>
+            <div className="dash-instruments">
+              <div className="dash-speed"><span>SPEED</span><strong>{Math.round(ui.speed)}</strong><small>m/s</small></div>
+              <div className="dash-range">
+                <div><span>RANGE {target.callSign}</span><b>{Math.round(ui.distance)} km</b></div>
+                <div><span>CLOSING</span><b className={ui.closing > 36 ? "hot" : ""}>{Math.round(ui.closing)} m/s</b></div>
+              </div>
+              <div className="dash-gauges">
+                {propellantGauge("PROP")}
+                {hullGauge}
+              </div>
+              <button className={`dash-assist ${ui.assist ? "active" : ""}`} aria-pressed={ui.assist} onClick={toggleAssist}><span className="status-light" />ASSIST</button>
+            </div>
+            <div className="dash-ledger">
+              <button
+                type="button"
+                className={`ledger-cell ${openDrawer === "mission" ? "open" : ""}`}
+                onClick={() => setDrawer((value) => value === "mission" ? null : "mission")}
+                aria-expanded={openDrawer === "mission"}
+              >
+                <span>{active ? "MANIFEST" : "OPEN SHIFT"}</span>
+                <b>{active ? active.title : "Choose your next line"}</b>
+                <small>{nextAction}</small>
+              </button>
+              {!docked && ui.line && (
+                <button
+                  type="button"
+                  className={`ledger-cell gate ${openDrawer === "gate" ? "open" : ""} ${ui.line.holding ? "holding" : ""}`}
+                  onClick={() => setDrawer((value) => value === "gate" ? null : "gate")}
+                  aria-expanded={openDrawer === "gate"}
+                >
+                  <span>{ui.line.to}</span>
+                  <b>{Math.round(ui.line.range)} km</b>
+                  <small>{ui.line.holding ? "Holding the line" : "Gate checklist"}</small>
+                </button>
+              )}
+              {!docked && ui.fuel < 9 && (
+                <button type="button" className="ledger-cell tow" onClick={emergencyTow}>
+                  <span>PROPELLANT LOW</span>
+                  <b>Request rescue tow</b>
+                  <small>{money(TOW_FEE)} billed to the account</small>
+                </button>
+              )}
+            </div>
+            {openDrawer && (
+              <div className={`dash-drawer ${openDrawer}`}>
+                <div className="panel-kicker">
+                  <span>{openDrawer === "mission" ? (active ? "ACTIVE MANIFEST" : "OPEN SHIFT") : ui.line?.name}</span>
+                  <span className="panel-kicker-tools">
+                    <span className={`stamp ${openDrawer === "mission" && active?.kind === "cryogenic" ? "cold" : ""}`}>{openDrawer === "mission" ? active?.kind ?? "self-directed" : ui.line?.to}</span>
+                    <button type="button" className="drawer-close" onClick={() => setDrawer(null)} aria-label="Fold the drawer away">▴</button>
+                  </span>
+                </div>
+                <div className={openDrawer === "mission" ? "mission-detail" : "line-detail"}>
+                  {openDrawer === "mission" ? missionDetail : gateDetail}
+                </div>
+                {openDrawer === "mission" && (
+                  <div className="drawer-foot"><span>STANDING <b>{String(ui.reputation).padStart(2, "0")}</b></span><span>JOBS <b>{String(ui.completed).padStart(2, "0")}</b></span></div>
+                )}
+              </div>
+            )}
+          </header>
+
+          {dockPanel}
+
+          {!docked && (
+            <div className="console plate" ref={consoleRef} aria-label="Touch flight controls" onContextMenu={(event) => event.preventDefault()}>
+              <button className="key rotate port" aria-label="Rotate to port" {...holdKey("a")}><i>↺</i><span>PORT</span></button>
+              <button className="key rotate stbd" aria-label="Rotate to starboard" {...holdKey("d")}><i>↻</i><span>STBD</span></button>
+              <button className="key thrust" aria-label="Main drive" {...holdKey("w")}><i>▲</i><span>MAIN DRIVE</span></button>
+              <button className="key strafe left" aria-label="Strafe left" disabled={!retroFitted} title={retroFitted ? undefined : "Requires Retro thruster pair"} {...holdKey("q")}><i>◀</i><span>STRAFE</span></button>
+              <button className="key strafe right" aria-label="Strafe right" disabled={!retroFitted} title={retroFitted ? undefined : "Requires Retro thruster pair"} {...holdKey("e")}><i>▶</i><span>STRAFE</span></button>
+              <button className="key brake" aria-label="Assisted brake" disabled={!retroFitted} title={retroFitted ? undefined : "Requires Retro thruster pair"} {...holdKey("shift")}><i>■</i><span>BRAKE</span></button>
+              <button className="key clamp" aria-label="Clamp or dock" onClick={() => { actionRequestRef.current = true; }}><i>⌗</i><span>CLAMP</span></button>
+            </div>
+          )}
+
+          {radioToast}
+        </>
+      )}
+
+      {screen === "game" && !mobile && (
         <>
           <header className="topbar">
             <div className="brand"><b>EMBERLINE</b><span>OPERATOR 07 / {currentShip.name.toUpperCase()} {currentShip.model}</span></div>
@@ -2381,172 +2658,39 @@ export default function EmberlineGame() {
             <nav className="utility-nav" aria-label="Game utilities">
               <button onClick={() => setMapOpen(true)}><kbd>M</kbd> System</button>
               <button onClick={() => setHelpOpen(true)}><kbd>H</kbd> Guide</button>
-              <button aria-label={muted ? "Enable audio" : "Mute audio"} onClick={() => { setMuted((value) => { audio.mute(!value); return !value; }); }}>{muted ? "Audio off" : "Audio on"}</button>
+              <button aria-label={muted ? "Enable audio" : "Mute audio"} onClick={toggleMute}>{muted ? "Audio off" : "Audio on"}</button>
               <button aria-label="Enter fullscreen" onClick={() => void document.documentElement.requestFullscreen?.()}>Expand</button>
             </nav>
           </header>
 
-          <aside className={`mission-card plate ${missionCollapsed ? "collapsed" : ""}`}>
+          <aside className="mission-card plate">
             <div className="panel-kicker">
               <span>{active ? "ACTIVE MANIFEST" : "OPEN SHIFT"}</span>
-              <span className="panel-kicker-tools">
-                <span className={`stamp ${active?.kind === "cryogenic" ? "cold" : ""}`}>{active?.kind ?? "self-directed"}</span>
-                <button
-                  type="button"
-                  className="mission-toggle"
-                  onClick={() => setMissionCollapsed((value) => !value)}
-                  aria-expanded={!missionCollapsed}
-                  aria-label={missionCollapsed ? "Expand active manifest" : "Collapse active manifest"}
-                >
-                  {missionCollapsed ? "▾" : "▴"}
-                </button>
-              </span>
+              <span className={`stamp ${active?.kind === "cryogenic" ? "cold" : ""}`}>{active?.kind ?? "self-directed"}</span>
             </div>
-            <button type="button" className="mission-summary" onClick={() => setMissionCollapsed(false)}>
-              <b>{active ? active.title : "Choose your next line"}</b>
-              <span>{active ? (ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(system, active.destination)?.callSign}`) : "Open system chart →"}</span>
-            </button>
-            <div className="mission-detail">
-              {active ? (
-                <>
-                  <h2>{active.title}</h2>
-                  <p>{active.description}</p>
-                  <div className="manifest-line">
-                    <CargoPortrait kind={active.cargo} count={active.quantity} condition={carriedCondition} />
-                    <div>
-                      <b>{CARGO[active.cargo].name}</b>{CARGO[active.cargo].short} × {active.quantity} · {CARGO[active.cargo].mass * active.quantity} t
-                      {carriedFreight.length > 0 && (
-                        <span className={`condition-readout ${carriedCondition < CONDITION_REJECT_THRESHOLD ? "danger" : carriedCondition < 0.8 ? "warn" : ""}`}>
-                          Condition {Math.round(carriedCondition * 100)}%{carriedCondition < CONDITION_REJECT_THRESHOLD ? " · will be refused" : ""}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="route-line"><span>{stationById(system, active.origin)?.callSign}</span><i /><span>{stationById(system, active.destination)?.callSign}</span></div>
-                  <div className="objective">
-                    <small>NEXT ACTION</small>
-                    <strong>{ui.loadingRemaining > 0 ? `Secure ${ui.loadingRemaining} staged unit${ui.loadingRemaining > 1 ? "s" : ""}` : `Dock at ${stationById(system, active.destination)?.name}`}</strong>
-                  </div>
-                  {active.timeLimit && (
-                    <>
-                      <div className={`timer ${ui.contractTime < 30 ? "urgent" : ""}`}><span>TIME BONUS</span><b>{seconds(ui.contractTime)}</b></div>
-                      <div className={`timer deadline ${ui.contractDeadline < DEADLINE_WARNING_WINDOW ? "urgent" : ""}`}><span>HARD DEADLINE</span><b>{seconds(ui.contractDeadline)}</b></div>
-                    </>
-                  )}
-                  <button className="text-button danger" onClick={abandonContract}>Abandon contract</button>
-                </>
-              ) : (
-                <>
-                  <h2>Choose your next line</h2>
-                  <p>Dock at a station to review local work, or set a course for The Wake and hunt salvage.</p>
-                  <button className="text-button" onClick={() => setMapOpen(true)}>Open system chart →</button>
-                </>
-              )}
-            </div>
+            <div className="mission-detail">{missionDetail}</div>
           </aside>
 
           <aside className="telemetry-card plate">
             <div className="velocity-readout"><span>SPEED</span><strong>{Math.round(ui.speed)}</strong><small>m/s</small></div>
             <div className="telemetry-row"><span>RANGE TO {target.callSign}</span><b>{Math.round(ui.distance)} km</b></div>
             <div className="telemetry-row"><span>CLOSING</span><b className={ui.closing > 36 ? "hot" : ""}>{Math.round(ui.closing)} m/s</b></div>
-            <div className="bar-row"><span>PROPELLANT</span><div className="meter"><i style={{ width: `${clamp(ui.fuel / fuelCapacity * 100, 0, 100)}%` }} /></div><b>{Math.round(ui.fuel)}</b></div>
-            <div className="bar-row"><span>HULL</span><div className="meter hull"><i style={{ width: `${ui.hull}%` }} /></div><b>{Math.round(ui.hull)}%</b></div>
+            {propellantGauge("PROPELLANT")}
+            {hullGauge}
             <div className="telemetry-row"><span>PAYLOAD</span><b>{cargoMass} t / {ui.cargo.length} clamps</b></div>
-            <button className={`assist-toggle ${ui.assist ? "active" : ""}`} onClick={() => { gameRef.current.assist = !gameRef.current.assist; setUi(snapshot(gameRef.current)); }}><span className="status-light" /> FLIGHT ASSIST {ui.assist ? "ON" : "OFF"} <kbd>F</kbd></button>
+            <button className={`assist-toggle ${ui.assist ? "active" : ""}`} onClick={toggleAssist}><span className="status-light" /> FLIGHT ASSIST {ui.assist ? "ON" : "OFF"} <kbd>F</kbd></button>
             {!ui.dockedId && ui.fuel < 9 && <button className="tow-button" onClick={emergencyTow}>Request rescue tow · {money(TOW_FEE)}</button>}
           </aside>
 
-          {docked && (
-            <section className="dock-panel plate" ref={setDockPanelNode}>
-              <div className="dock-heading">
-                <div>
-                  <span>BERTHED AT {docked.callSign}</span>
-                  <h2>{docked.name}</h2>
-                  <small className="kind">{docked.kind}</small>
-                  <p>{docked.description}</p>
-                  <div className="services">{docked.services.map((item) => <span className="tag" key={item}>{item}</span>)}</div>
-                </div>
-                <button className="primary-button compact" onClick={undock}>Release berth <span>→</span></button>
-              </div>
-              <div className="dock-tabs" role="tablist">
-                <button className={panel === "contracts" ? "active" : ""} onClick={() => setPanel("contracts")}>Contract board</button>
-                <button className={panel === "service" ? "active" : ""} onClick={() => setPanel("service")}>Service & refit</button>
-                <button className={panel === "fleet" ? "active" : ""} onClick={() => setPanel("fleet")}>Shipyard</button>
-              </div>
-              <div className="dock-content">
-                {panel === "contracts" && (
-                  <div className="contract-list">
-                    {contractsHere.map((contract) => {
-                      const reward = rewardFor(contract, gameRef.current.routeRuns);
-                      const withheld = ui.credits < 0 && contract.baseReward > ARREARS_CEILING;
-                      const locked = withheld || ui.reputation < contract.minReputation || Boolean(contract.requiredShip && contract.requiredShip !== ui.shipId) || (contract.kind === "cryogenic" && !ui.upgrades.includes("cryo")) || (contract.minSlots ?? contract.quantity) > currentShip.slots + (ui.upgrades.includes("clamps") ? 1 : 0);
-                      const cargo = CARGO[contract.cargo];
-                      return (
-                        <article className={`contract ${locked ? "locked" : ""}`} key={contract.id} style={{ "--accent": cargo.accent } as React.CSSProperties}>
-                          <div className="contract-top"><span className={`stamp ${contract.kind === "cryogenic" ? "cold" : ""}`}>{contract.kind}</span><b>{money(reward)}</b></div>
-                          <div className="contract-body">
-                            <div><h3>{contract.title}</h3><p>{contract.description}</p></div>
-                            <CargoPortrait kind={contract.cargo} count={contract.quantity} />
-                          </div>
-                          <div className="manifest"><span>{cargo.short} × {contract.quantity}</span><span>{cargo.mass * contract.quantity} t</span><span>{stationById(system, contract.origin)?.callSign} → {stationById(system, contract.destination)?.callSign}</span>{contract.timeLimit && <span>{seconds(contract.timeLimit)} bonus window</span>}</div>
-                          <div className="tear" aria-hidden="true" />
-                          {withheld ? <small className="requirement">Withheld while the account is overdrawn</small> : locked ? <small className="requirement">Requires rep {contract.minReputation}{contract.requiredShip ? ` · ${shipById(contract.requiredShip).name}` : ""}{contract.kind === "cryogenic" ? " · Cryo umbilical" : ""}{(contract.minSlots ?? contract.quantity) > currentShip.slots + (ui.upgrades.includes("clamps") ? 1 : 0) ? ` · ${contract.minSlots ?? contract.quantity} clamps` : ""}</small> : <button disabled={Boolean(ui.activeContractId)} onClick={() => stageContract(contract)}>Accept manifest</button>}
-                        </article>
-                      );
-                    })}
-                  </div>
-                )}
-                {panel === "service" && (
-                  <div className="service-grid">
-                    <article><span>PROPELLANT</span><h3>{Math.round(ui.fuel)} / {Math.round(fuelCapacity)}</h3><p>{ui.credits < 0 ? "Refined monopropellant. The yard meters it onto your tab until the account is square — you can always fly." : "Refined monopropellant, metered at this port’s posted rate."}</p><button onClick={() => service("fuel")}>Fill tanks · {money(Math.ceil((fuelCapacity - ui.fuel) * 4))}</button></article>
-                    <article><span>HULL & RIGGING</span><h3>{Math.round(ui.hull)}% integrity</h3><p>{ui.credits < 0 ? "Pressure shell, radiator, clamp, and RCS inspection. Withheld until the account is settled." : "Pressure shell, radiator, clamp, and RCS inspection."}</p><button disabled={ui.credits < 0} onClick={() => service("repair")}>Authorize work · {money(Math.ceil((100 - ui.hull) * 18))}</button></article>
-                    {UPGRADES.map((upgrade) => (
-                      <article className={`${!docked.services.includes("upgrades") || ui.credits < 0 ? "locked" : ""} ${ui.upgrades.includes(upgrade.id) ? "fitted" : ""}`} key={upgrade.id}><span>{ui.upgrades.includes(upgrade.id) ? "INSTALLED" : "SHIP REFIT"}</span><h3>{upgrade.name}</h3><p>{upgrade.description}</p>{ui.upgrades.includes(upgrade.id) ? <small className="installed">Hardware fitted</small> : <button disabled={!docked.services.includes("upgrades") || ui.credits < 0} onClick={() => buyUpgrade(upgrade.id)}>Install · {money(upgrade.cost)}</button>}</article>
-                    ))}
-                  </div>
-                )}
-                {panel === "fleet" && (
-                  <div className="ship-list">
-                    {SHIPS.map((ship) => {
-                      const owned = ui.ownedShips.includes(ship.id);
-                      return <article className={`${ui.shipId === ship.id ? "selected" : ""} ${!docked.services.includes("ships") ? "locked" : ""}`} key={ship.id}><ShipPortrait ship={ship} /><span>{ship.role.toUpperCase()}</span><h3>{ship.name} <small>{ship.model}</small></h3><p>{ship.description}</p><div className="ship-stats"><span>{ship.slots} clamps</span><span>{ship.fuelCapacity} fuel</span><span>{ship.dryMass} t dry</span></div><button disabled={!docked.services.includes("ships") || ui.shipId === ship.id || (!owned && ui.credits < 0)} onClick={() => buyOrSwitchShip(ship.id)}>{ui.shipId === ship.id ? "Active vessel" : owned ? "Move to active berth" : `Purchase · ${money(ship.cost)}`}</button></article>;
-                    })}
-                  </div>
-                )}
-              </div>
-            </section>
-          )}
+          {dockPanel}
 
           {!docked && ui.line && (
-            <aside className={`line-card plate ${lineCollapsed ? "collapsed" : ""}`}>
+            <aside className="line-card plate">
               <div className="panel-kicker">
                 <span>{ui.line.name}</span>
-                <span className="panel-kicker-tools">
-                  <span className="stamp">{ui.line.to}</span>
-                  <button
-                    type="button"
-                    className="line-toggle"
-                    onClick={() => setLineCollapsed((value) => !value)}
-                    aria-expanded={!lineCollapsed}
-                    aria-label={lineCollapsed ? "Expand gate telemetry" : "Collapse gate telemetry"}
-                  >
-                    {lineCollapsed ? "▾" : "▴"}
-                  </button>
-                </span>
+                <span className="stamp">{ui.line.to}</span>
               </div>
-              <button type="button" className="line-summary" onClick={() => setLineCollapsed(false)}>
-                <b>{Math.round(ui.line.range)} km to gate</b>
-                <span>{ui.line.holding ? "Holding the line" : "Tap for gate checklist"}</span>
-              </button>
-              <div className="line-detail">
-                <div className="telemetry-row"><span>RANGE TO GATE</span><b>{Math.round(ui.line.range)} km</b></div>
-                <div className={`line-check ${ui.line.speedAlong >= ui.line.threshold ? "met" : ""}`}><span>LANE SPEED</span><b>{Math.round(ui.line.speedAlong)} / {ui.line.threshold}</b></div>
-                <div className={`line-check ${ui.line.inLane ? "met" : ""}`}><span>OFF CENTRE</span><b>{Math.round(ui.line.lateral)} / {ui.line.laneWidth}</b></div>
-                <div className={`line-check ${ui.line.drift <= ui.line.tolerance ? "met" : ""}`}><span>TRACK</span><b>{(ui.line.drift * 180 / Math.PI).toFixed(1)}° / {(ui.line.tolerance * 180 / Math.PI).toFixed(0)}°</b></div>
-                <div className={`line-check ${ui.line.clear ? "met" : ""}`}><span>CLEAR OF WELLS</span><b>{ui.line.clear ? "YES" : "NO"}</b></div>
-                <div className="bar-row"><span>DRIVE SPOOL</span><div className="meter line"><i style={{ width: `${clamp(ui.line.spool / ui.line.spoolNeeded * 100, 0, 100)}%` }} /></div><b>{ui.line.spool.toFixed(1)}s</b></div>
-                {ui.line.stranding && <small className="requirement">A manifest is aboard. Its deadline keeps running while you are on the line.</small>}
-              </div>
+              <div className="line-detail">{gateDetail}</div>
             </aside>
           )}
 
@@ -2561,25 +2705,7 @@ export default function EmberlineGame() {
             </div>
           )}
 
-          {!docked && (
-            <div className="touch-controls" aria-label="Touch flight controls" onContextMenu={(event) => event.preventDefault()}>
-              <div className="touch-cluster">
-                <div className="touch-row">
-                  <button onPointerDown={() => setTouch("a", true)} onPointerUp={() => setTouch("a", false)} onPointerLeave={() => setTouch("a", false)}>↺</button>
-                  <button onPointerDown={() => setTouch("d", true)} onPointerUp={() => setTouch("d", false)} onPointerLeave={() => setTouch("d", false)}>↻</button>
-                </div>
-                <div className="touch-row">
-                  <button disabled={!retroFitted} onPointerDown={() => setTouch("q", true)} onPointerUp={() => setTouch("q", false)} onPointerLeave={() => setTouch("q", false)}>◀</button>
-                  <button disabled={!retroFitted} onPointerDown={() => setTouch("e", true)} onPointerUp={() => setTouch("e", false)} onPointerLeave={() => setTouch("e", false)}>▶</button>
-                </div>
-              </div>
-              <button className="touch-thrust" onPointerDown={() => setTouch("w", true)} onPointerUp={() => setTouch("w", false)} onPointerLeave={() => setTouch("w", false)}>THRUST</button>
-              <button disabled={!retroFitted} onPointerDown={() => setTouch("shift", true)} onPointerUp={() => setTouch("shift", false)} onPointerLeave={() => setTouch("shift", false)}>BRAKE</button>
-              <button onClick={() => { actionRequestRef.current = true; }}>CLAMP</button>
-            </div>
-          )}
-
-          {ui.message && gameRef.current.elapsed < gameRef.current.messageUntil && <div className="radio-toast"><span>PILGRIM NET</span><p>{ui.message}</p></div>}
+          {radioToast}
           <div className={`save-indicator ${savePulse ? "pulse" : ""}`}><span /> SHIFT LOG SAVED LOCALLY</div>
         </>
       )}

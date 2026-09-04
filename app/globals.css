@@ -138,8 +138,6 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
 .panel-kicker { display: flex; justify-content: space-between; align-items: center; padding-bottom: 10px; border-bottom: 1px dashed var(--line-strong); color: var(--amber); font: var(--stencil); font-size: 9px; letter-spacing: .18em; }
 .panel-kicker .stamp { transform: none; padding: 2px 5px 1px; font-size: 8px; }
 .panel-kicker-tools { display: flex; align-items: center; gap: 6px; }
-.mission-toggle, .line-toggle { display: none; flex: 0 0 auto; padding: 2px 7px; border: 1px solid var(--line-strong); background: transparent; color: var(--amber); font-size: 11px; line-height: 1.4; cursor: pointer; }
-.mission-summary, .line-summary { display: none; width: 100%; padding: 0; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .mission-card h2 { margin: 15px 0 5px; font-size: 18px; font-weight: 520; letter-spacing: -.01em; }
 .mission-card .mission-detail > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
 .manifest-line { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
@@ -325,8 +323,6 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
 .guide-grid p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .guide-grid kbd { display: inline-block; min-width: 14px; padding: 1px 4px 0; border: 1px solid #0b0a07; border-radius: 2px; background: linear-gradient(180deg, #f1eadb, #cfc7b4); color: #17140d; text-align: center; box-shadow: 0 1px 0 #6f6858; }
 
-.touch-controls { display: none; }
-
 @media (max-width: 1050px) {
   .top-readouts > div { min-width: 90px; padding-inline: 12px; }
   .utility-nav button { min-width: 70px; }
@@ -337,9 +333,26 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
   .service-grid { grid-template-columns: repeat(2, minmax(210px, 1fr)); }
 }
 
-@media (max-width: 760px) {
-  .game-shell { min-height: 560px; }
-  .title-screen { display: block; padding: 54px 24px 28px; background: linear-gradient(180deg, rgba(3,7,8,.96) 0%, rgba(3,7,8,.88) 42%, rgba(3,7,8,.2) 68%, rgba(3,7,8,.34) 100%); overflow-y: auto; }
+/* ---------- the cockpit ----------
+   On a narrow screen the flight deck is one instrument rather than a set of
+   plates pinned around a window. The dash runs along the top: registry,
+   account and utilities on the first row, speed, range, the two gauges and
+   the assist lamp on the second, and a ledger strip along the bottom edge
+   that unfolds the manifest or the gate checklist as a drawer. The console
+   runs along the bottom: seven keycaps set into one steel plate. Between them
+   is the window, and nothing floats over it. Dock and modal sheets fill from
+   the bottom or edge to edge. */
+@media (max-width: 760px), (pointer: coarse) and (max-height: 540px) {
+  :root {
+    --sat: env(safe-area-inset-top, 0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --console-h: calc(112px + var(--sab));
+    --sheet-h: min(60svh, calc(100svh - 220px));
+  }
+  .game-shell { min-height: 0; }
+
+  /* opening frame */
+  .title-screen { display: block; padding: calc(54px + var(--sat)) 24px calc(28px + var(--sab)); background: linear-gradient(180deg, rgba(3,7,8,.96) 0%, rgba(3,7,8,.88) 42%, rgba(3,7,8,.2) 68%, rgba(3,7,8,.34) 100%); overflow-y: auto; }
   .title-copy h1 { font-size: clamp(44px, 14vw, 96px); }
   .title-copy .eyebrow span:last-child { display: none; }
   .title-copy .subtitle { letter-spacing: .22em; }
@@ -351,78 +364,193 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
   .feature-line { flex-wrap: wrap; gap: 8px 14px; }
   .feature-line span + span::before { margin-right: 14px; }
   .title-log { display: none; }
-  .topbar { height: 54px; }
-  .brand { min-width: 0; flex: 1; margin: 7px 0 7px 8px; padding: 6px 12px 5px 10px; }
-  .brand b { font-size: 17px; }
-  .brand span { font-size: 6px; }
-  .brand::after { right: 5px; width: 3px; }
-  .top-readouts { display: none; }
-  .utility-nav button { width: 54px; min-width: 54px; overflow: hidden; color: transparent; }
-  .utility-nav button:nth-child(4) { display: none; }
-  .utility-nav kbd { color: var(--amber); }
-  .mission-card { top: 64px; left: 10px; width: min(236px, calc(100vw - 116px)); padding: 12px; }
-  .mission-card h2 { margin-top: 11px; font-size: 14px; }
-  .mission-card .mission-detail > p { font-size: 9px; }
-  .manifest-line .cargo-portrait { width: 64px; height: 34px; }
-  .route-line { margin: 11px 0; }
-  .objective { padding: 7px 9px; }
-  .mission-toggle { display: inline-flex; align-items: center; justify-content: center; }
-  .mission-card.collapsed { padding-bottom: 10px; }
-  .mission-card.collapsed .mission-detail { display: none; }
-  .mission-card:not(.collapsed) .mission-summary { display: none; }
-  .mission-card.collapsed .mission-summary { display: flex; flex-direction: column; gap: 3px; padding-top: 9px; }
-  .mission-summary b { font-size: 12px; color: var(--bone); font-weight: 600; }
-  .mission-summary span { font-size: 9px; color: var(--muted); font-family: var(--font-mono-ui), monospace; }
-  .telemetry-card { top: 64px; right: 10px; width: 92px; padding: 10px 9px; }
-  .velocity-readout { display: block; text-align: right; border-bottom: 0; padding-bottom: 0; }
-  .velocity-readout span { display: block; font-size: 6px; }
-  .velocity-readout strong { font-size: 21px; }
-  .telemetry-card .telemetry-row, .assist-toggle { display: none; }
-  /* Fuel and hull stay visible on mobile — running dry or taking hull damage needs to be seen at a glance. */
-  .telemetry-card .bar-row { display: block; margin-top: 8px; }
-  .telemetry-card .bar-row span { display: block; margin-bottom: 3px; font-size: 6px; }
-  .telemetry-card .bar-row b { display: block; margin-top: 3px; text-align: right; font-size: 10px; }
-  .telemetry-card .tow-button { margin-top: 9px; min-height: 0; padding: 6px; font-size: 7px; line-height: 1.35; text-align: center; }
-  /* The ship is always drawn at the viewport's centre, and the gate-line card's
-     desktop position/width sits right over that point on a narrow screen. Stack
-     it under the telemetry card instead — clear of both the toast strip that
-     rides the bottom edge and the ship — and let it collapse like the mission
-     card so it never has to cover more than that corner. */
-  .line-card { top: 205px; right: 10px; width: min(190px, calc(50vw - 20px)); padding: 10px 12px 11px; }
-  .line-toggle { display: inline-flex; align-items: center; justify-content: center; }
-  .line-card.collapsed { padding-bottom: 10px; }
-  .line-card.collapsed .line-detail { display: none; }
-  .line-card:not(.collapsed) .line-summary { display: none; }
-  .line-card.collapsed .line-summary { display: flex; flex-direction: column; gap: 3px; padding-top: 9px; }
-  .line-summary b { font-size: 11px; color: var(--bone); font-weight: 600; }
-  .line-summary span { font-size: 8px; color: var(--muted); font-family: var(--font-mono-ui), monospace; }
-  .flight-controls { display: none; }
-  .touch-controls { position: absolute; z-index: 8; right: 12px; bottom: 18px; left: 12px; display: flex; justify-content: space-between; align-items: flex-end; pointer-events: none; }
-  .touch-controls button { width: 62px; height: 50px; border: 1px solid #0b0a07; background: linear-gradient(180deg, #f1eadb, #cfc7b4); color: #17140d; pointer-events: auto; font: var(--stencil); font-size: 9px; letter-spacing: .08em; touch-action: none; box-shadow: 0 3px 0 #6f6858, inset 0 1px 0 #fff; }
-  .touch-controls button:active { transform: translateY(2px); box-shadow: 0 1px 0 #6f6858, inset 0 1px 0 #fff; }
-  .touch-cluster { display: flex; flex-direction: column; gap: 6px; }
-  .touch-row { display: flex; gap: 6px; }
-  .touch-row button { width: 48px; font-size: 17px; }
-  .touch-controls .touch-thrust { height: 70px; background: linear-gradient(180deg, #f2c66c, #c4913a); box-shadow: 0 3px 0 #6b4a17, inset 0 1px 0 rgba(255,255,255,.5); }
-  .radio-toast { bottom: 100px; }
-  .save-indicator { display: none; }
-  .dock-panel { top: 62px; right: 8px; bottom: 8px; left: 8px; height: auto; display: block; overflow-y: auto; }
-  .dock-heading { min-height: 170px; padding: 18px; border-right: 0; border-bottom: 1px solid var(--plate-edge); }
-  .dock-heading h2 { margin-top: 8px; font-size: 24px; }
-  .dock-heading p { margin: 3px 0 14px; }
-  .dock-heading .primary-button { min-height: 40px; }
-  .dock-tabs { position: sticky; top: 0; z-index: 3; padding: 0 6px; }
-  .dock-tabs button { min-width: 0; flex: 1; padding: 0 6px; font-size: 7px; }
+
+  /* the window frame: two steel rails the dash and console both land on */
+  .cockpit-rails { position: absolute; z-index: 3; inset: 0; pointer-events: none; border-left: 4px solid #101314; border-right: 4px solid #101314; box-shadow: inset 1px 0 0 var(--plate-edge), inset -1px 0 0 var(--plate-edge); }
+
+  /* dash */
+  .dash { position: absolute; z-index: 6; top: 0; left: 0; right: 0; padding-top: var(--sat); border-width: 0 0 1px; }
+  .dash.plate { box-shadow: 0 2px 0 #000, 0 10px 30px rgba(0,0,0,.5); }
+  .dash.plate::before { background: var(--tape) 0 100% / 100% 3px no-repeat, var(--castings); }
+  .dash-top { display: flex; align-items: stretch; height: 34px; border-bottom: 1px solid var(--plate-edge); }
+  .dash-brand { position: relative; display: flex; flex-direction: column; justify-content: center; margin: 4px 0 4px 8px; padding: 0 14px 0 8px; color: #17140d; background: var(--bone); border: 1px solid #0b0a07; box-shadow: inset 0 0 0 1px rgba(255,255,255,.35), 0 1px 0 #000; }
+  .dash-brand::after { content: ""; position: absolute; top: 0; bottom: 0; right: 5px; width: 3px; background: var(--oxide); }
+  .dash-brand b { font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif; font-size: 14px; letter-spacing: .04em; line-height: 1; }
+  .dash-brand span { margin-top: 2px; color: #4a4536; font-family: var(--font-mono-ui), monospace; font-size: 6px; font-weight: 700; letter-spacing: .14em; }
+  .dash-account { flex: 1; display: flex; flex-direction: column; justify-content: center; min-width: 0; margin-left: 8px; padding: 0 10px; border-left: 1px solid var(--plate-edge); }
+  .dash-account span { color: var(--muted); font: var(--stencil); font-size: 6px; letter-spacing: .2em; }
+  .dash-account strong { margin-top: 3px; overflow: hidden; font-family: var(--font-mono-ui), monospace; font-size: 13px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+  .dash-account strong.arrears { color: var(--danger); }
+  .dash-nav { display: flex; gap: 4px; align-items: center; padding: 0 8px; border-left: 1px solid var(--plate-edge); }
+  .dash-nav button { min-width: 40px; height: 24px; padding: 0 6px; border: 1px solid #0b0a07; border-radius: 2px; background: linear-gradient(180deg, #f1eadb, #cfc7b4); color: #17140d; cursor: pointer; font: var(--stencil); font-size: 7px; letter-spacing: .1em; box-shadow: 0 2px 0 #6f6858, inset 0 1px 0 #fff; }
+  .dash-nav button:active, .dash-nav button.off { transform: translateY(1px); box-shadow: 0 1px 0 #6f6858, inset 0 1px 0 #fff; }
+  .dash-nav button.off { background: linear-gradient(180deg, #9a9385, #7a7364); color: #1b1a16; }
+
+  .dash-instruments { display: grid; grid-template-columns: auto auto 1fr auto; align-items: stretch; height: 52px; border-bottom: 1px solid var(--plate-edge); }
+  .dash-instruments > * { display: flex; flex-direction: column; justify-content: center; min-width: 0; padding: 0 10px; border-right: 1px solid var(--plate-edge); }
+  .dash-instruments > :last-child { border-right: 0; }
+  .dash-speed { display: grid; grid-template-columns: auto auto; align-items: baseline; align-content: center; column-gap: 4px; padding-left: 12px; }
+  .dash-speed span { grid-column: 1 / 3; color: var(--teal); font: var(--stencil); font-size: 6px; letter-spacing: .2em; }
+  .dash-speed strong { margin-top: 3px; font-family: var(--font-mono-ui), monospace; font-size: 24px; font-weight: 400; letter-spacing: -.02em; line-height: 1; }
+  .dash-speed small { color: var(--muted); font-family: var(--font-mono-ui), monospace; font-size: 8px; }
+  .dash-range { gap: 4px; }
+  .dash-range div { display: flex; justify-content: space-between; gap: 10px; }
+  .dash-range span { color: var(--muted); font: var(--stencil); font-size: 6px; letter-spacing: .14em; white-space: nowrap; }
+  .dash-range b { color: #c7c8bd; font-family: var(--font-mono-ui), monospace; font-size: 10px; font-weight: 600; white-space: nowrap; }
+  .dash-range b.hot { color: var(--danger); }
+  .dash-gauges { gap: 6px; }
+  .dash-gauges .bar-row { grid-template-columns: 32px 1fr 26px; gap: 6px; margin: 0; font-size: 6px; }
+  .dash-gauges .bar-row b { font-size: 9px; }
+  .dash-gauges .meter { height: 5px; }
+  .dash-assist { align-items: center; gap: 4px; padding: 0 10px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: var(--stencil); font-size: 6px; letter-spacing: .14em; }
+  .dash-assist .status-light { width: 8px; height: 8px; margin: 0 0 3px; background: #4d524c; box-shadow: inset 0 0 0 1px #0b0a07; }
+  .dash-assist.active { color: var(--teal); }
+  .dash-assist.active .status-light { background: var(--teal); box-shadow: 0 0 8px rgba(112,170,164,.8); }
+
+  /* the ledger strip: every open item is a cell with its own label stripe */
+  .dash-ledger { display: flex; align-items: stretch; min-height: 38px; }
+  .ledger-cell { position: relative; flex: 1 1 0; display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; padding: 5px 22px 6px 12px; border: 0; border-right: 1px solid var(--plate-edge); background: transparent; color: var(--bone); cursor: pointer; text-align: left; }
+  .ledger-cell:last-child { border-right: 0; }
+  .ledger-cell::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--amber); }
+  .ledger-cell::after { content: "▾"; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 10px; }
+  .ledger-cell.open { background: rgba(220,169,82,.08); }
+  .ledger-cell.open::after { content: "▴"; color: var(--amber); }
+  .ledger-cell span { color: var(--amber); font: var(--stencil); font-size: 6px; letter-spacing: .2em; }
+  .ledger-cell b { overflow: hidden; font-size: 11px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+  .ledger-cell small { overflow: hidden; color: var(--muted); font-family: var(--font-mono-ui), monospace; font-size: 8px; white-space: nowrap; text-overflow: ellipsis; }
+  .ledger-cell.gate { flex: 0 1 auto; max-width: 46%; }
+  .ledger-cell.gate::before { background: var(--oxide); }
+  .ledger-cell.gate span { color: var(--oxide); }
+  .ledger-cell.gate.holding::before { background: var(--teal); }
+  .ledger-cell.gate.holding span { color: var(--teal); }
+  .ledger-cell.tow { flex-basis: 100%; }
+  .ledger-cell.tow::before { background: var(--danger); animation: urgency 1s steps(1) infinite; }
+  .ledger-cell.tow::after { content: "→"; color: var(--danger); }
+  .ledger-cell.tow span { color: var(--danger); }
+  .dash-ledger:has(.tow) { flex-wrap: wrap; }
+  .dash-ledger:has(.tow) .ledger-cell:not(.tow) { border-bottom: 1px solid var(--plate-edge); }
+
+  /* the drawer hangs off the dash so it never moves the ship */
+  .dash > .dash-drawer { position: absolute; z-index: 2; top: 100%; left: 0; right: 0; max-height: calc(100svh - var(--console-h) - 150px); overflow-y: auto; padding: 10px 14px 12px; background: var(--plate); border-bottom: 1px solid var(--plate-edge); box-shadow: 0 2px 0 #000, 0 16px 36px rgba(0,0,0,.5); scrollbar-width: thin; }
+  .dash-drawer .panel-kicker { padding-bottom: 8px; }
+  .drawer-close { padding: 1px 8px; border: 1px solid var(--line-strong); background: transparent; color: var(--amber); cursor: pointer; font-size: 11px; line-height: 1.3; }
+  .dash-drawer h2 { margin: 12px 0 4px; font-size: 15px; font-weight: 520; }
+  .dash-drawer .mission-detail > p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+  .dash-drawer .manifest-line .cargo-portrait { width: 72px; height: 38px; }
+  .dash-drawer .route-line { margin: 10px 0; }
+  .dash-drawer .objective { padding: 7px 10px; }
+  .dash-drawer .text-button { padding-top: 10px; }
+  .dash-drawer .line-detail .requirement { display: block; margin-top: 10px; color: var(--muted); font-size: 8px; line-height: 1.5; }
+  .drawer-foot { display: flex; gap: 16px; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line-strong); color: var(--muted); font: var(--stencil); font-size: 7px; letter-spacing: .16em; }
+  .drawer-foot b { color: var(--bone); font-size: 9px; }
+
+  /* console */
+  .console { position: absolute; z-index: 6; left: 0; right: 0; bottom: 0; height: var(--console-h); display: grid; grid-template-columns: 1fr 1fr 1.45fr 1fr 1fr; grid-template-rows: 1fr 1fr; grid-template-areas: "port stbd thrust left right" "port stbd thrust brake clamp"; gap: 6px; padding: 13px 8px calc(9px + var(--sab)); border-width: 1px 0 0; }
+  .console.plate { background: linear-gradient(180deg, #1c1e1c, #101314); box-shadow: 0 -2px 0 #000, 0 -12px 30px rgba(0,0,0,.5); }
+  .console.plate::before { background: var(--hazard) 0 0 / 100% 5px no-repeat, var(--castings); }
+  .key { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0; padding: 0; border: 1px solid #0b0a07; border-radius: 2px; background: linear-gradient(180deg, #f1eadb, #cfc7b4); color: #17140d; cursor: pointer; font: var(--stencil); font-size: 7px; letter-spacing: .1em; box-shadow: 0 4px 0 #6f6858, inset 0 1px 0 #fff; touch-action: none; transition: transform .06s, box-shadow .06s; }
+  .key i { font-size: 18px; font-style: normal; line-height: 1; }
+  .key span { opacity: .7; }
+  .key.down, .key:active:not(:disabled) { transform: translateY(3px); box-shadow: 0 1px 0 #6f6858, inset 0 1px 0 #fff; }
+  .key.port { grid-area: port; }
+  .key.stbd { grid-area: stbd; }
+  .key.thrust { grid-area: thrust; }
+  .key.left { grid-area: left; }
+  .key.right { grid-area: right; }
+  .key.brake { grid-area: brake; }
+  .key.clamp { grid-area: clamp; }
+  .key.thrust, .key.brake, .key.clamp { background: linear-gradient(180deg, #f2c66c, #c4913a); box-shadow: 0 4px 0 #6b4a17, inset 0 1px 0 rgba(255,255,255,.5); }
+  .key.thrust.down, .key.thrust:active:not(:disabled), .key.brake.down, .key.brake:active:not(:disabled), .key.clamp:active:not(:disabled) { box-shadow: 0 1px 0 #6b4a17, inset 0 1px 0 rgba(255,255,255,.5); }
+  .key.thrust i { font-size: 22px; }
+  .key:disabled { filter: grayscale(1) !important; box-shadow: 0 4px 0 #6f6858, inset 0 1px 0 #fff; }
+
+  /* teletype strip rides the top of the console, or of the dock sheet */
+  .is-cockpit .radio-toast { left: 10px; right: 10px; bottom: calc(var(--console-h) + 8px); width: auto; padding: 6px 10px 7px 12px; transform: none; animation-name: radio-in-flat; }
+  .is-cockpit .radio-toast span { font-size: 6px; }
+  .is-cockpit .radio-toast p { margin-top: 2px; font-size: 10px; line-height: 1.4; }
+  .is-cockpit.is-docked .radio-toast { bottom: calc(var(--sheet-h) + 6px); }
+
+  /* dock: a sheet from the bottom edge, the berth stays in view above it */
+  .is-cockpit .dock-panel { top: auto; right: 0; bottom: 0; left: 0; height: var(--sheet-h); display: flex; flex-direction: column; padding-top: 6px; border-width: 1px 0 0; }
+  .is-cockpit .dock-heading { flex: 0 0 auto; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; min-height: 0; padding: 10px 12px 10px 14px; border-right: 0; border-bottom: 1px solid var(--plate-edge); }
+  .is-cockpit .dock-heading h2 { margin: 3px 0 0; max-width: none; overflow: hidden; font-size: 18px; white-space: nowrap; text-overflow: ellipsis; }
+  .is-cockpit .dock-heading .kind { margin: 3px 0 0; font-size: 7px; }
+  .is-cockpit .dock-heading p { display: none; }
+  .is-cockpit .services { gap: 4px; margin-top: 6px; }
+  .is-cockpit .services .tag { padding: 3px 4px 2px; font-size: 6px; }
+  .is-cockpit .dock-heading .primary-button { min-width: 0; min-height: 38px; padding: 0 12px; font-size: 8px; }
+  .is-cockpit .dock-heading .primary-button span { margin-left: 10px; }
+  .is-cockpit .dock-tabs { flex: 0 0 auto; height: 40px; padding: 0 6px; }
+  .is-cockpit .dock-tabs button { flex: 1; min-width: 0; height: 32px; padding: 0 4px; font-size: 7px; }
+  .is-cockpit .dock-tabs button.active { height: 36px; }
+  .is-cockpit .dock-content { flex: 1 1 auto; min-height: 0; padding-bottom: var(--sab); }
   .contract-list, .service-grid, .ship-list { grid-template-columns: 1fr; }
-  .ship-list article { min-height: 280px; }
-  .modal { inset: 7px; }
-  .map-copy { top: 62px; left: 20px; width: calc(100% - 40px); }
-  .map-copy h2 { font-size: 38px; }
-  .system-chart { padding: 168px 14px 96px; gap: 10px; }
+  .contract { min-height: 0; padding: 12px 14px 12px 18px; }
+  .service-grid article { min-height: 0; padding: 14px; }
+  .ship-list article { min-height: 0; }
+
+  /* chart and guide fill the screen edge to edge */
+  .modal { inset: 0; }
+  .modal-close { top: calc(10px + var(--sat)); right: 10px; min-height: 32px; }
+  .map-copy { top: calc(12px + var(--sat)); left: 14px; width: calc(100% - 120px); }
+  .map-copy h2 { margin: 6px 0 0; font-size: 26px; }
+  .map-copy > p:last-child { display: none; }
+  .system-chart { padding: calc(78px + var(--sat)) 8px calc(72px + var(--sab)); gap: 8px; }
   .chart-ports button { padding: 4px 7px 4px 6px; }
-  .map-legend { justify-content: flex-start; flex-wrap: wrap; gap: 8px 18px; }
-  .guide-modal { padding: 72px 22px 30px; }
-  .guide-grid { grid-template-columns: 1fr; }
+  .map-legend { left: 14px; right: 14px; bottom: calc(10px + var(--sab)); justify-content: flex-start; flex-wrap: wrap; gap: 6px 14px; padding-top: 8px; font-size: 7px; }
+  .guide-modal { padding: calc(56px + var(--sat)) 14px calc(24px + var(--sab)); }
+  .guide-heading h2 { font-size: 30px; }
+  .guide-grid { grid-template-columns: 1fr; margin: 22px 0; }
+  .guide-grid article { min-height: 0; padding: 16px 16px 16px 18px; }
+  .guide-modal .primary-button { width: 100%; }
+}
+@keyframes radio-in-flat { from { opacity: 0; transform: translateY(6px); } }
+
+/* a short screen: the same dash, with its rows pulled in */
+@media (max-height: 540px) {
+  .dash-top { height: 28px; }
+  .dash-brand { margin: 3px 0 3px 8px; padding: 0 12px 0 8px; }
+  .dash-brand b { font-size: 13px; }
+  .dash-brand span { display: none; }
+  .dash-instruments { height: 42px; }
+  .dash-speed strong { font-size: 20px; }
+  .dash-ledger { height: 30px; min-height: 0; }
+  .ledger-cell { gap: 1px; padding-block: 3px 4px; overflow: hidden; }
+  .ledger-cell small { display: none; }
+}
+
+/* a phone on its side: the console splits into a thumb pod at each edge of
+   the window, and the dock sheet stands beside the berth instead of under it */
+@media (pointer: coarse) and (max-height: 540px) and (orientation: landscape) {
+  :root { --dash-h: calc(101px + var(--sat)); --pod-w: calc(150px + env(safe-area-inset-left, 0px)); }
+  .console { top: var(--dash-h); bottom: 0; height: auto; grid-template-columns: 64px 64px 1fr 64px 64px; grid-template-rows: 44px 1fr 1fr; grid-template-areas: "left right . brake clamp" "port stbd . thrust thrust" "port stbd . thrust thrust"; gap: 6px; padding: 8px calc(8px + env(safe-area-inset-right, 0px)) calc(8px + var(--sab)) calc(8px + env(safe-area-inset-left, 0px)); border: 0; background: none; box-shadow: none; pointer-events: none; }
+  .console.plate { background: none; border: 0; box-shadow: none; }
+  .console > * { pointer-events: auto; }
+  .dash-instruments { grid-template-columns: auto auto 280px auto; justify-content: start; }
+  .dash-instruments > :last-child { border-right: 1px solid var(--plate-edge); }
+  .console.plate::before, .console.plate::after { content: ""; position: absolute; top: 0; bottom: 0; width: var(--pod-w); background: linear-gradient(180deg, var(--plate-2), var(--plate)), var(--grain); box-shadow: 0 2px 0 #000; pointer-events: none; }
+  .console.plate::before { left: 0; border-right: 1px solid var(--plate-edge); }
+  .console.plate::after { right: 0; border-left: 1px solid var(--plate-edge); }
+  .key i { font-size: 15px; }
+  .key.thrust i { font-size: 20px; }
+  .is-cockpit .radio-toast { left: var(--pod-w); right: var(--pod-w); bottom: 10px; }
+  .is-cockpit.is-docked .radio-toast { left: 10px; right: calc(52% + 10px); bottom: 10px; }
+  .is-cockpit .dock-panel { top: var(--dash-h); left: 48%; height: auto; border-width: 0 0 0 1px; }
+  .is-cockpit .dock-panel.plate::before { background: var(--castings); }
+  .is-cockpit .dock-heading { padding: 8px 10px 8px 12px; }
+  .is-cockpit .dock-heading h2 { font-size: 15px; }
+  .is-cockpit .dock-heading .primary-button { min-height: 32px; padding: 0 10px; font-size: 7px; }
+  .is-cockpit .dock-tabs { height: 34px; }
+  .is-cockpit .dock-tabs button { height: 28px; font-size: 6px; }
+  .is-cockpit .dock-tabs button.active { height: 31px; }
+  .is-cockpit .dock-content { padding-right: env(safe-area-inset-right, 0px); }
+  .modal-close { top: 8px; }
+  .map-copy { top: 8px; }
+  .map-copy h2 { font-size: 20px; }
+  .system-chart { padding: 52px 8px 8px; flex-direction: row; }
+  .chart-ports { flex: 0 0 auto; flex-direction: column; justify-content: flex-start; max-width: 40%; }
+  .map-legend { display: none; }
+  .guide-modal { padding: 44px 14px 16px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
