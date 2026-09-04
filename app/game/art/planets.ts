@@ -50,7 +50,14 @@ export const SURFACE_CONTACT = PLANET_SCALE / PLANET_PARALLAX;
 export const ATMOSPHERE_TOP = 1.3;
 
 /** System light angle. Everything on every planet is lit from here. */
-const LIGHT = -2.53; // sun at upper left, toward the busy side of the system
+/**
+ * The angle everything in this file is drawn lit from, and the angle the
+ * cached surfaces are baked at. It is no longer where the star is — the star
+ * moves relative to every body — so it is now purely a reference: `drawPlanet`
+ * turns a body by the difference between this and the real light angle. See
+ * `PlanetArtState.light`.
+ */
+const LIGHT = -2.53;
 const LIGHT_DIR = { x: Math.cos(LIGHT), y: Math.sin(LIGHT) };
 /** Belt tilt on Rayleigh; the terrain and storms follow it. */
 const TILT = -0.18;
@@ -61,6 +68,18 @@ export type PlanetArtState = {
   time: number;
   /** Camera zoom; keeps hairlines and lamp dots readable at any zoom. */
   zoom: number;
+  /**
+   * The angle light actually arrives from, in world space.
+   *
+   * Everything in this file is drawn lit from the fixed `LIGHT` below, and
+   * much of it is baked into a cached surface that would be ruinous to
+   * repaint as a body moves. So rather than re-light, `drawPlanet` rotates
+   * the whole body by the difference: the baked lit side is simply turned to
+   * face the star. A planet's terrain rotating with its own daylight costs
+   * nothing and is what a turning planet does anyway. Omit for the fixed
+   * angle, which is what the menu portraits want.
+   */
+  light?: number;
 };
 
 type RGB = readonly [number, number, number];
@@ -188,12 +207,14 @@ function rocheOutline(radius: number): Vec2[] {
  *
  * The body keeps its true position in the simulation; only the painting
  * moves, by the fraction of the camera's offset the parallax lets through.
+ * `at` is where the body is now — bodies orbit, so its authored anchor is
+ * only the start of a shift.
  */
-export function planetParallax(body: CelestialBody, camera: { x: number; y: number }) {
+export function planetParallax(body: CelestialBody, at: Vec2, camera: { x: number; y: number }) {
   const slip = 1 - PLANET_PARALLAX;
   return {
-    x: body.position.x + (camera.x - body.position.x) * slip,
-    y: body.position.y + (camera.y - body.position.y) * slip,
+    x: at.x + (camera.x - at.x) * slip,
+    y: at.y + (camera.y - at.y) * slip,
     radius: body.radius * PLANET_SCALE,
   };
 }
@@ -568,6 +589,9 @@ export function drawPlanet(ctx: CanvasRenderingContext2D, body: CelestialBody, s
   ctx.save();
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
+  /* Turn the body so its baked daylight faces the real star. Everything below
+     is drawn in the fixed LIGHT frame and this is what makes that honest. */
+  if (state.light !== undefined) ctx.rotate(state.light - LIGHT);
 
   /* 1. atmosphere: a soft shell of scattered light around the limb, brighter towards the sun */
   if (atmosphere) {

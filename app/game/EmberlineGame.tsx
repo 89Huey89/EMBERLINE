@@ -15,9 +15,10 @@ import type { CargoKind, CelestialBody, ContractDefinition, ShipDefinition, Stat
 import { drawCargoUnit } from "./art/cargo";
 import { drawDebrisChunk } from "./art/debris";
 import { ATMOSPHERE_TOP, drawPlanet, planetParallax, PLANET_SCALE, SURFACE_CONTACT } from "./art/planets";
+import { CORONA_REACH, drawStar, STAR_SCALE, starLight } from "./art/star";
 import { drawShipPortrait, shipArtFor } from "./art/ships";
 import { BERTH_CAPTURE, berthPoint, drawStation, stationColliders } from "./art/stations";
-import { orbitRadius, stationPose } from "./orbits";
+import { bodyOrbitRadius, bodyPose, orbitRadius, stationPose, wakePose } from "./orbits";
 
 const TAU = Math.PI * 2;
 const SAVE_KEY = "emberline-save-v1";
@@ -234,13 +235,15 @@ type Pickup = CargoItem & {
   angle: number;
   discovered: boolean;
   /**
-   * Freight standing on a station's staging area, as an offset from that
-   * station. Ports orbit, so staged units have to ride with the pad instead
-   * of being left behind in space the moment the station moves on. Cleared
-   * the instant a unit is clamped or shaken loose, after which it is an
-   * ordinary object with its own velocity.
+   * Held in a moving frame, as an offset from it. `frame` is a station id for
+   * freight standing on a pad, or "wake" for salvage lying in the debris
+   * cloud. Everything in this system orbits, so anything set down has to ride
+   * with whatever it was set down on rather than being left behind in empty
+   * space the moment that thing moves on. Cleared the instant a unit is
+   * clamped or shaken loose, after which it is an ordinary object with its
+   * own velocity.
    */
-  anchor?: { station: string; dx: number; dy: number };
+  anchor?: { frame: string; dx: number; dy: number };
 };
 
 type Particle = {
@@ -256,8 +259,10 @@ type Particle = {
 
 /** One chunk of the Wake's hazard field: solid, unpowered, un-grabbable. */
 type Debris = {
+  /** Offset from the Wake's centre, not a world position: the cloud orbits. */
   x: number;
   y: number;
+  /** Drift within the cloud. The cloud's own motion is added at the point of use. */
   vx: number;
   vy: number;
   angle: number;
@@ -519,7 +524,7 @@ function stagedPickups(contract: ContractDefinition, station: Station, time: num
       spin: index % 2 ? -0.05 : 0.05,
       angle: station.orientation,
       discovered: true,
-      anchor: { station: station.id, dx: x - pose.x, dy: y - pose.y },
+      anchor: { frame: station.id, dx: x - pose.x, dy: y - pose.y },
     });
   }
   return units;
@@ -573,11 +578,16 @@ function makeSalvage(): Pickup[] {
       value: CARGO[kind].value * (1.1 + index * 0.18),
       x: SALVAGE_ZONE.center.x + Math.cos(angle) * radius,
       y: SALVAGE_ZONE.center.y + Math.sin(angle) * radius,
-      vx: Math.cos(angle + Math.PI / 2) * (3 + index),
-      vy: Math.sin(angle + Math.PI / 2) * (3 + index),
+      vx: 0,
+      vy: 0,
       spin: (index % 2 ? -1 : 1) * (0.08 + index * 0.015),
       angle,
       discovered: false,
+      /* Held in the cloud rather than drifting freely in it: the Wake orbits,
+         and a recoverable left at a fixed point would be a thousand units
+         behind the debris it belongs to within a minute. The tumbling the
+         zone is named for is the debris field's job, not the salvage's. */
+      anchor: { frame: "wake", dx: Math.cos(angle) * radius, dy: Math.sin(angle) * radius },
     };
   });
   /*
@@ -598,11 +608,12 @@ function makeSalvage(): Pickup[] {
     value: WAKE_PRIZE_VALUE,
     x: SALVAGE_ZONE.center.x + Math.cos(0.83) * SALVAGE_ZONE.radius * 0.16,
     y: SALVAGE_ZONE.center.y + Math.sin(0.83) * SALVAGE_ZONE.radius * 0.16,
-    vx: 2.6,
-    vy: -1.7,
+    vx: 0,
+    vy: 0,
     spin: 0.05,
     angle: 0.83,
     discovered: false,
+    anchor: { frame: "wake", dx: Math.cos(0.83) * SALVAGE_ZONE.radius * 0.16, dy: Math.sin(0.83) * SALVAGE_ZONE.radius * 0.16 },
   };
   return [...common, prize];
 }
@@ -624,8 +635,8 @@ function makeDebris(): Debris[] {
     const radius = (index * 71 + 30) % (SALVAGE_ZONE.radius - 40);
     const drift = index * 1.777 + 0.5;
     return {
-      x: SALVAGE_ZONE.center.x + Math.cos(angle) * radius,
-      y: SALVAGE_ZONE.center.y + Math.sin(angle) * radius,
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius,
       vx: Math.cos(drift) * (2 + (index * 7) % DEBRIS_MAX_DRIFT),
       vy: Math.sin(drift) * (2 + (index * 11) % DEBRIS_MAX_DRIFT),
       angle: index * 0.83,
@@ -761,10 +772,12 @@ function CargoPortrait({ kind, count = 1, condition = 1 }: { kind: CargoKind; co
 /** A body from the flight view, fitted into a square with its atmosphere. */
 function PlanetPortrait({ body }: { body: CelestialBody }) {
   const ref = usePortrait((ctx, width, height) => {
-    const fit = Math.min(width, height) / 2 / (body.radius * PLANET_SCALE * 1.18);
+    const drawn = body.star ? STAR_SCALE * 1.9 : PLANET_SCALE * 1.18;
+    const fit = Math.min(width, height) / 2 / (body.radius * drawn);
     ctx.translate(width / 2, height / 2);
     ctx.scale(fit, fit);
-    drawPlanet(ctx, body, { time: 1, zoom: fit });
+    if (body.star) drawStar(ctx, body, { time: 1, zoom: fit });
+    else drawPlanet(ctx, body, { time: 1, zoom: fit });
   }, [body]);
   return <canvas ref={ref} className="map-planet portrait" aria-hidden="true" />;
 }
@@ -1157,6 +1170,13 @@ export default function EmberlineGame() {
       notify(`${contract.title} missed its deadline. Dispatch voids the manifest and bills ${money(penalty)}; any freight aboard is marked down to salvage. Account stands at ${money(game.credits)}.`, 8);
     };
 
+    /** Where a held object's frame is now: a port's pad, or the debris cloud. */
+    const framePose = (frame: string, time: number) => {
+      if (frame === "wake") return wakePose(time);
+      const station = stationById(frame);
+      return station ? stationPose(station, time) : null;
+    };
+
     /** A standing warning that repeats no more often than WARNING_INTERVAL. */
     const nag = (game: GameMutable, message: string, duration = 4) => {
       if (game.elapsed - lastWarningRef.current < WARNING_INTERVAL) return;
@@ -1262,22 +1282,31 @@ export default function EmberlineGame() {
         }
       }
       for (const body of BODIES) {
+        const at = bodyPose(body, game.elapsed);
         solids.push({
-          x: body.position.x,
-          y: body.position.y,
-          r: body.radius * SURFACE_CONTACT,
-          vx: 0,
-          vy: 0,
-          what: `Surface contact on ${body.name}`,
+          x: at.x,
+          y: at.y,
+          r: body.radius * (body.star ? CORONA_REACH : SURFACE_CONTACT),
+          vx: at.vx,
+          vy: at.vy,
+          what: body.star ? `Contact with ${body.name} itself` : `Surface contact on ${body.name}`,
         });
       }
       /* The Wake's hazard field only joins the list this close to it, so a
          ship anywhere else in the system pays nothing for 30-plus circles
          it could never reach. Reuses this same loop and applyImpact below —
          a debris hit is a contact like any other, not a second damage rule. */
-      if (distance(game.ship, SALVAGE_ZONE.center) < DEBRIS_ACTIVE_RANGE) {
+      const cloud = wakePose(game.elapsed);
+      if (distance(game.ship, cloud) < DEBRIS_ACTIVE_RANGE) {
         for (const chunk of game.debris) {
-          solids.push({ x: chunk.x, y: chunk.y, r: chunk.r, vx: chunk.vx, vy: chunk.vy, what: "Debris strike in the Wake" });
+          solids.push({
+            x: cloud.x + chunk.x,
+            y: cloud.y + chunk.y,
+            r: chunk.r,
+            vx: cloud.vx + chunk.vx,
+            vy: cloud.vy + chunk.vy,
+            what: "Debris strike in the Wake",
+          });
         }
       }
 
@@ -1314,18 +1343,23 @@ export default function EmberlineGame() {
     const applyAtmosphere = (game: GameMutable, dt: number) => {
       for (const body of BODIES) {
         if (!body.atmosphere) continue;
-        const top = body.radius * ATMOSPHERE_TOP;
-        const dist = distance(game.ship, body.position);
+        /* The star gets the same treatment as a sky, at a radius set by where
+           its glow visibly ends and at a heat no atmosphere reaches: the
+           corona is a warning you have seconds to act on, not minutes. */
+        const top = body.star ? body.radius * CORONA_REACH * 1.6 : body.radius * ATMOSPHERE_TOP;
+        const at = bodyPose(body, game.elapsed);
+        const dist = distance(game.ship, at);
         if (dist > top) continue;
-        const deck = body.radius * SURFACE_CONTACT;
+        const heatScale = body.star ? 6 : 1;
+        const deck = body.radius * (body.star ? CORONA_REACH : SURFACE_CONTACT);
         const depth = clamp((top - dist) / Math.max(1, top - deck), 0, 1);
         const speed = Math.hypot(game.ship.vx, game.ship.vy);
         const drag = depth * depth * 0.55 * dt;
         game.ship.vx -= game.ship.vx * drag;
         game.ship.vy -= game.ship.vy * drag;
-        const heat = depth * speed * 0.02 * dt;
+        const heat = depth * speed * 0.02 * heatScale * dt;
         if (heat > 0.004) {
-          lastHarmRef.current = `heating in ${body.name}'s atmosphere`;
+          lastHarmRef.current = body.star ? `${body.name}'s corona` : `heating in ${body.name}'s atmosphere`;
           game.ship.hull = Math.max(0, game.ship.hull - heat);
           game.cargo.forEach((item) => {
             item.condition = Math.max(0.15, item.condition - heat * 0.004);
@@ -1344,7 +1378,9 @@ export default function EmberlineGame() {
             });
           }
         }
-        nag(game, `${body.name} atmosphere. Drag building and the hull is heating — climb out.`, 3);
+        nag(game, body.star
+          ? `${body.name}'s corona. The hull is cooking — turn away now.`
+          : `${body.name} atmosphere. Drag building and the hull is heating — climb out.`, 3);
       }
     };
 
@@ -1359,28 +1395,30 @@ export default function EmberlineGame() {
      * right up until it is either close or scanned — not before.
      */
     const updateDebrisField = (game: GameMutable, dt: number) => {
-      if (distance(game.ship, SALVAGE_ZONE.center) >= DEBRIS_ACTIVE_RANGE) return;
+      const cloud = wakePose(game.elapsed);
+      if (distance(game.ship, cloud) >= DEBRIS_ACTIVE_RANGE) return;
       const scanRange = game.upgrades.includes("scanner") ? 520 : 215;
+      /* Worked entirely in the cloud's own frame, so the tumbling is the
+         tumbling a pilot sees on the way in and none of it has to be undone
+         as the Wake carries the whole field around its lane. */
       game.debris.forEach((chunk) => {
         chunk.x += chunk.vx * dt;
         chunk.y += chunk.vy * dt;
         chunk.angle += chunk.spin * dt;
-        const dx = chunk.x - SALVAGE_ZONE.center.x;
-        const dy = chunk.y - SALVAGE_ZONE.center.y;
-        const dist = Math.hypot(dx, dy);
+        const dist = Math.hypot(chunk.x, chunk.y);
         const limit = SALVAGE_ZONE.radius - chunk.r * DEBRIS_EDGE_MARGIN;
         if (dist > limit && dist > 0.001) {
-          const nx = dx / dist;
-          const ny = dy / dist;
-          chunk.x = SALVAGE_ZONE.center.x + nx * limit;
-          chunk.y = SALVAGE_ZONE.center.y + ny * limit;
+          const nx = chunk.x / dist;
+          const ny = chunk.y / dist;
+          chunk.x = nx * limit;
+          chunk.y = ny * limit;
           const into = chunk.vx * nx + chunk.vy * ny;
           if (into > 0) {
             chunk.vx -= 2 * into * nx;
             chunk.vy -= 2 * into * ny;
           }
         }
-        if (distance(game.ship, chunk) < scanRange) chunk.discovered = true;
+        if (distance(game.ship, { x: cloud.x + chunk.x, y: cloud.y + chunk.y }) < scanRange) chunk.discovered = true;
       });
     };
 
@@ -1519,8 +1557,9 @@ export default function EmberlineGame() {
       game.ship.angle += game.ship.av * dt;
 
       for (const body of BODIES) {
-        const dx = body.position.x - game.ship.x;
-        const dy = body.position.y - game.ship.y;
+        const at = bodyPose(body, game.elapsed);
+        const dx = at.x - game.ship.x;
+        const dy = at.y - game.ship.y;
         const distSq = dx * dx + dy * dy;
         const dist = Math.sqrt(distSq);
         const radii = dist / body.radius;
@@ -1561,13 +1600,12 @@ export default function EmberlineGame() {
       resolveContacts(game, HULL_RADIUS[shipDef.size]);
 
       game.pickups.forEach((pickup) => {
-        const anchored = pickup.anchor ? stationById(pickup.anchor.station) : null;
-        if (pickup.anchor && anchored) {
-          const pose = stationPose(anchored, game.elapsed);
-          pickup.x = pose.x + pickup.anchor.dx;
-          pickup.y = pose.y + pickup.anchor.dy;
-          pickup.vx = pose.vx;
-          pickup.vy = pose.vy;
+        const held = pickup.anchor ? framePose(pickup.anchor.frame, game.elapsed) : null;
+        if (pickup.anchor && held) {
+          pickup.x = held.x + pickup.anchor.dx;
+          pickup.y = held.y + pickup.anchor.dy;
+          pickup.vx = held.vx;
+          pickup.vy = held.vy;
         } else {
           pickup.x += pickup.vx * dt;
           pickup.y += pickup.vy * dt;
@@ -1731,38 +1769,50 @@ export default function EmberlineGame() {
         * top of the atmosphere, then the deck — and the deck brightens as
         * the ship closes on it, so the last ring is the loudest.
         */
-      /* The lanes the ports run on, faint enough to stay background. */
+      /* The lanes, faint enough to stay background: the worlds' around the
+         star, the ports' around whichever world carries them. A planet's lane
+         is fixed in space; a station's is drawn wherever its planet is now. */
       context.strokeStyle = "rgba(125,144,137,.055)";
       context.lineWidth = 1 / cam.zoom;
+      BODIES.forEach((body) => {
+        const lane = bodyOrbitRadius(body);
+        if (!lane) return;
+        context.beginPath();
+        context.arc(0, 0, lane, 0, TAU);
+        context.stroke();
+      });
       STATIONS.forEach((station) => {
         const primary = BODIES.find((body) => body.id === station.orbit.around);
         if (!primary) return;
+        const at = bodyPose(primary, game.elapsed);
         context.beginPath();
-        context.arc(primary.position.x, primary.position.y, orbitRadius(station), 0, TAU);
+        context.arc(at.x, at.y, orbitRadius(station), 0, TAU);
         context.stroke();
       });
 
       BODIES.forEach((body) => {
-        const deck = body.radius * SURFACE_CONTACT;
+        const at = bodyPose(body, game.elapsed);
+        const deck = body.radius * (body.star ? CORONA_REACH : SURFACE_CONTACT);
         context.lineWidth = 1 / cam.zoom;
         context.strokeStyle = "rgba(125,144,137,.08)";
-        context.beginPath(); context.arc(body.position.x, body.position.y, body.radius * GRAVITY_REACH, 0, TAU); context.stroke();
-        if (body.atmosphere) {
+        context.beginPath(); context.arc(at.x, at.y, body.radius * GRAVITY_REACH, 0, TAU); context.stroke();
+        if (body.atmosphere && !body.star) {
           context.strokeStyle = "rgba(150,190,190,.14)";
           context.setLineDash([14 / cam.zoom, 18 / cam.zoom]);
-          context.beginPath(); context.arc(body.position.x, body.position.y, body.radius * ATMOSPHERE_TOP, 0, TAU); context.stroke();
+          context.beginPath(); context.arc(at.x, at.y, body.radius * ATMOSPHERE_TOP, 0, TAU); context.stroke();
           context.setLineDash([]);
         }
-        const near = clamp(1 - (distance(game.ship, body.position) - deck) / (body.radius * 0.9), 0, 1);
+        const near = clamp(1 - (distance(game.ship, at) - deck) / (body.radius * 0.9), 0, 1);
         context.strokeStyle = `rgba(214,86,58,${(0.15 + near * 0.6).toFixed(3)})`;
         context.lineWidth = (1 + near * 1.5) / cam.zoom;
         context.setLineDash([5 / cam.zoom, 9 / cam.zoom]);
-        context.beginPath(); context.arc(body.position.x, body.position.y, deck, 0, TAU); context.stroke();
+        context.beginPath(); context.arc(at.x, at.y, deck, 0, TAU); context.stroke();
         context.setLineDash([]);
       });
 
+      const cloudAt = wakePose(game.elapsed);
       context.save();
-      context.translate(SALVAGE_ZONE.center.x, SALVAGE_ZONE.center.y);
+      context.translate(cloudAt.x, cloudAt.y);
       const dust = context.createRadialGradient(0, 0, 10, 0, 0, SALVAGE_ZONE.radius);
       dust.addColorStop(0, "rgba(123,105,74,.07)");
       dust.addColorStop(0.6, "rgba(102,92,73,.035)");
@@ -1778,12 +1828,17 @@ export default function EmberlineGame() {
          now real, simulated hazard chunks, drawn with the traffic below
          once discovered (see game.debris.forEach further down). */
 
-      /* Planets sit behind the traffic and drift with parallax, not with the world. */
+      /* Bodies sit behind the traffic and drift with parallax, not with the
+         world. The star is painted the same way but by its own routine: it
+         is the light source, so it has no lit side and no terminator. */
+      const star = BODIES.find((body) => body.star);
+      const starAt = star ? planetParallax(star, bodyPose(star, game.elapsed), cam) : { x: 0, y: 0 };
       BODIES.forEach((body) => {
-        const at = planetParallax(body, cam);
+        const at = planetParallax(body, bodyPose(body, game.elapsed), cam);
         context.save();
         context.translate(at.x, at.y);
-        drawPlanet(context, body, { time: game.elapsed, zoom: cam.zoom });
+        if (body.star) drawStar(context, body, { time: game.elapsed, zoom: cam.zoom });
+        else drawPlanet(context, body, { time: game.elapsed, zoom: cam.zoom, light: starLight(at, starAt) });
         context.restore();
       });
 
@@ -1811,11 +1866,14 @@ export default function EmberlineGame() {
          hits the ship (see resolveContacts) — it simply is not drawn yet. */
       game.debris.forEach((chunk) => {
         if (!chunk.discovered) return;
+        /* Chunk coordinates are offsets in the cloud's frame, so the whole
+           field is placed by translating to where the Wake is now. */
+        const at = { x: cloudAt.x + chunk.x, y: cloudAt.y + chunk.y };
         context.save();
-        context.translate(chunk.x, chunk.y);
+        context.translate(at.x, at.y);
         context.rotate(chunk.angle);
         drawDebrisChunk(context, { r: chunk.r, variant: chunk.variant });
-        if (distance(game.ship, chunk) < chunk.r + 130) {
+        if (distance(game.ship, at) < chunk.r + 130) {
           context.strokeStyle = "rgba(214,86,58,.55)";
           context.lineWidth = 1 / cam.zoom;
           context.beginPath(); context.arc(0, 0, chunk.r + 10 + Math.sin(game.elapsed * 3) * 2, 0, TAU); context.stroke();
@@ -2113,9 +2171,9 @@ export default function EmberlineGame() {
       {mapOpen && (
         <section className="modal map-modal plate" role="dialog" aria-modal="true" aria-labelledby="map-title">
           <button className="modal-close" onClick={() => setMapOpen(false)}>Close <kbd>ESC</kbd></button>
-          <div className="map-copy"><p className="eyebrow">COMPRESSED NAVIGATION CHART / NOT TO SCALE</p><h2 id="map-title">The Cinder system</h2><p>Learn the working lines. Mine to refinery, refinery to shipyard, ice moon to habitat. Every port is drawn at its mean position and every one of them is moving, so the best route is the one your current ship can fly cleanly to where the port will be.</p></div>
+          <div className="map-copy"><p className="eyebrow">COMPRESSED NAVIGATION CHART / NOT TO SCALE</p><h2 id="map-title">The Cinder system</h2><p>Three worlds around one star, and everything here is moving: ports around their world, worlds around Cinder, the inner lane fastest. The chart is schematic — what matters is that the run between two worlds lengthens and shortens as they pass, so a lane that is cheap this shift may be twice the distance the next.</p></div>
           <div className="system-map">
-            <div className="orbit orbit-one" /><div className="orbit orbit-two" />
+            <div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="orbit orbit-three" />
             {BODIES.map((body) => <div className={`map-body ${body.id}`} key={body.id}><PlanetPortrait body={body} /><span>{body.name.toUpperCase()}<small>{body.kind}</small></span></div>)}
             <div className="wake-zone"><i />THE WAKE</div>
             {STATIONS.map((station) => <button key={station.id} className={`map-station station-${station.id} ${station.id === ui.targetId ? "active" : ""}`} onClick={() => setTarget(station.id)}><i /><b>{station.callSign}</b><span>{station.name}</span></button>)}
@@ -2132,9 +2190,9 @@ export default function EmberlineGame() {
             <article><span>01</span><h3>Take local work</h3><p>While docked, choose a manifest from the contract board. Repeated routes gradually pay less as local demand is met. Every manifest with a bonus window also carries a hard deadline well beyond it — miss that and the contract voids, but freight already aboard survives as marked-down salvage rather than being lost outright. Nobody dies out here — they go broke. A tow or a written-off hull is billed whether you can cover it or not, and an overdrawn account is held to small work until you fly it back.</p></article>
             <article><span>02</span><h3>Secure the load</h3><p>Release the berth, drift within 92 m of each staged unit, match its speed, then press <kbd>SPACE</kbd>. Staged freight rides its pad around with the port. Cargo changes mass and handling — and fragile freight cannot take the main drive the way sturdier cargo can, so favor the brake over the throttle. The manifest card shows condition as you fly; arrive below half strength and the destination refuses the load outright, penalty included.</p></article>
             <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward. <kbd>A</kbd>/<kbd>D</kbd> rotate. <kbd>Q</kbd>/<kbd>E</kbd> strafe. The teal line is your true velocity. Burn, coast, flip, brake — a loaded round trip costs most of a tank, so the coast is free and the burn is not. Aim where the beacon is going, not where it sits.</p></article>
-            <article><span>04</span><h3>Make a clean arrival</h3><p>Ports orbit, so an arrival is a rendezvous. <b>CLOSING</b> on the panel is your speed relative to the pad, and it has to be under 36 m/s to clamp — matching a port’s motion matters more than stopping. Structure is solid: contact above 18 m/s costs hull, above 55 m/s it tears a container off the spine.</p></article>
-            <article><span>05</span><h3>Respect the deck</h3><p>The red ring is a planet’s surface and it is solid. The dashed ring above it is atmosphere: drag and heat, survivable briefly, useful for shedding speed. Loaded, you cannot climb straight out of a deep well.</p></article>
-            <article><span>06</span><h3>Work The Wake</h3><p>A slow debris field sits northeast of Rayleigh, and it is solid — the same closing-speed rule that governs a station or a planet governs it. A scanner shows it from 520 units out instead of 215; without one, flying in fast is a gamble. Salvage pays well, and something worth more sits deep in the field.</p></article>
+            <article><span>04</span><h3>Make a clean arrival</h3><p>Ports orbit, and their worlds orbit too, so an arrival is a rendezvous with the sum of both. <b>CLOSING</b> on the panel is your speed relative to the pad, and it has to be under 36 m/s to clamp — matching a port’s motion matters more than stopping, and a port on the fast inner world is the hardest to come alongside. Structure is solid: contact above 18 m/s costs hull, above 55 m/s it tears a container off the spine.</p></article>
+            <article><span>05</span><h3>Respect the deck</h3><p>The red ring is a surface and it is solid. The dashed ring above it is atmosphere: drag and heat, survivable briefly, useful for shedding speed. Loaded, you cannot climb straight out of a deep well. Cinder itself carries the same rings and nothing forgiving inside them.</p></article>
+            <article><span>06</span><h3>Work The Wake</h3><p>A slow debris field keeps station with Rayleigh, trailing it around the same lane, and it is solid — the same closing-speed rule that governs a station or a planet governs it. A scanner shows it from 520 units out instead of 215; without one, flying in fast is a gamble. Salvage pays well, and something worth more sits deep in the field.</p></article>
           </div>
           <button className="primary-button" onClick={() => setHelpOpen(false)}>Return to the flight deck <span>→</span></button>
         </section>

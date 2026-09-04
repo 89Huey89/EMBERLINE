@@ -35,7 +35,18 @@ export type CelestialBody = {
   id: string;
   name: string;
   kind: string;
+  /**
+   * Position at the start of a shift, and the whole definition of the body's
+   * orbit: its distance from the star fixes the radius and its bearing fixes
+   * the phase. Use `bodyPose` for where a body actually is; this is only the
+   * anchor that orbit is derived from. The star itself carries no orbit and
+   * simply sits here.
+   */
   position: Vec2;
+  /** The body it orbits, and seconds for one lap. Absent for the star. */
+  orbit?: { around: string; period: number };
+  /** Marks the system primary: it lights everything, and its edge is a corona rather than a surface. */
+  star?: true;
   radius: number;
   gravity: number;
   color: string;

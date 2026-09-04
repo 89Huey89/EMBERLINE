@@ -23,7 +23,7 @@ import type {
  * actually changed: a close pass now bends a loaded ship, and inside roughly
  * two radii of Rayleigh a loaded courier can no longer climb straight out.
  */
-export const WORLD = { width: 13000, height: 9000 };
+export const WORLD = { width: 35000, height: 35000 };
 
 export const CARGO: Record<string, CargoDefinition> = {
   ore: { id: "ore", name: "Nickel ore", short: "ORE", mass: 18, value: 260, color: "#655e54", accent: "#d29a54", shape: "ore" },
@@ -37,12 +37,36 @@ export const CARGO: Record<string, CargoDefinition> = {
   science: { id: "science", name: "Survey instruments", short: "SCI", mass: 7, value: 1100, color: "#5b6570", accent: "#d5bd70", shape: "crate" },
 };
 
+/**
+ * The star and the worlds, all in one list so gravity, the hazard rings and
+ * the contact solver treat them alike. Cinder carries no orbit — it is what
+ * everything else orbits — and is marked so the art and the hazard radii can
+ * tell a corona from a surface.
+ *
+ * Periods follow Kepler from the innermost lane outward (T proportional to
+ * r^1.5), which is what makes alignments drift and lanes open and close. The
+ * base period is set so the fastest body still moves at 35 m/s, well under
+ * what any ship cruises at: a world you cannot catch is not a destination.
+ */
 export const BODIES: CelestialBody[] = [
+  {
+    id: "star",
+    name: "Cinder",
+    kind: "system primary",
+    position: { x: 0, y: 0 },
+    radius: 900,
+    gravity: 40000000,
+    color: "#f6bd63",
+    atmosphere: "#ffd89a",
+    star: true,
+    description: "The system's own furnace, and the reason every hold in it is warm. Nothing that goes near it comes back.",
+  },
   {
     id: "cinder",
     name: "Rayleigh",
     kind: "temperate industrial world",
-    position: { x: 0, y: 300 },
+    position: { x: 0, y: 8400 },
+    orbit: { around: "star", period: 2467 },
     radius: 705,
     gravity: 21900000,
     color: "#9e522f",
@@ -53,7 +77,8 @@ export const BODIES: CelestialBody[] = [
     id: "morrow",
     name: "Nernst",
     kind: "ice moon",
-    position: { x: 4400, y: -2450 },
+    position: { x: 12817, y: -7400 },
+    orbit: { around: "star", period: 5769 },
     radius: 350,
     gravity: 4250000,
     color: "#6b7e83",
@@ -64,7 +89,8 @@ export const BODIES: CelestialBody[] = [
     id: "brindle",
     name: "Roche",
     kind: "captured metallic body",
-    position: { x: -4775, y: -2125 },
+    position: { x: -3007, y: -1094 },
+    orbit: { around: "star", period: 580 },
     radius: 215,
     gravity: 1560000,
     color: "#625749",
@@ -87,7 +113,7 @@ export const STATIONS: Station[] = [
     name: "Pilgrim Exchange",
     callSign: "PX-01",
     kind: "commerce & habitation",
-    position: { x: -1975, y: 100 },
+    position: { x: -1975, y: 8200 },
     orbit: { around: "cinder", period: 900 },
     color: "#d9b15f",
     orientation: 0.08,
@@ -102,7 +128,7 @@ export const STATIONS: Station[] = [
     name: "Sinter Refinery",
     callSign: "SN-44",
     kind: "ore refinery",
-    position: { x: 1975, y: 1750 },
+    position: { x: 1975, y: 9850 },
     orbit: { around: "cinder", period: 1220 },
     color: "#d66b3c",
     orientation: -0.55,
@@ -117,7 +143,7 @@ export const STATIONS: Station[] = [
     name: "Anvil Gate Shipyard",
     callSign: "AG-17",
     kind: "shipyard",
-    position: { x: -2900, y: 2300 },
+    position: { x: -2900, y: 10400 },
     orbit: { around: "cinder", period: 2100 },
     color: "#ca8e52",
     orientation: 0.35,
@@ -132,7 +158,7 @@ export const STATIONS: Station[] = [
     name: "Deepwell Extraction",
     callSign: "DW-3",
     kind: "mining concern",
-    position: { x: -4175, y: -2300 },
+    position: { x: -2407, y: -1269 },
     orbit: { around: "brindle", period: 360 },
     color: "#af7a45",
     orientation: 0.82,
@@ -147,7 +173,7 @@ export const STATIONS: Station[] = [
     name: "Bluehour Depot",
     callSign: "BH-08",
     kind: "ice processing & fuel",
-    position: { x: 3850, y: -3275 },
+    position: { x: 12267, y: -8225 },
     orbit: { around: "morrow", period: 480 },
     color: "#75a8a7",
     orientation: -0.24,
@@ -162,7 +188,7 @@ export const STATIONS: Station[] = [
     name: "Quiet Arc Laboratory",
     callSign: "QA-12",
     kind: "research platform",
-    position: { x: 5650, y: -1250 },
+    position: { x: 14067, y: -6200 },
     orbit: { around: "morrow", period: 1100 },
     color: "#88aaa7",
     orientation: 0.12,
@@ -227,7 +253,15 @@ export const CONTRACTS: ContractDefinition[] = [
 
 export const SALVAGE_ZONE = {
   name: "The Wake",
-  center: { x: 1575, y: -2625 },
+  /**
+   * Co-orbital with Rayleigh: the same lane and the same period, trailing it
+   * by 40 degrees. A cloud parked at a fixed point would be swept by
+   * Rayleigh's own station system twice an orbit, and there is no fixed
+   * radius that clears every lane — so it keeps station with the world whose
+   * launch debris it is, which is also what the guide has always claimed.
+   */
+  center: { x: 5399, y: 6434 },
+  orbit: { around: "star", period: 2467 },
   radius: 620,
   description: "A slow cloud of launch hardware, dead relays, and one persistent unknown return.",
 };
