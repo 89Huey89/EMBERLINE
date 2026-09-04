@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { headers } from "next/headers";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -13,12 +12,12 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export async function generateMetadata(): Promise<Metadata> {
-  const requestHeaders = await headers();
-  const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:3000";
-  const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
-  const base = new URL(`${protocol}://${host}`);
-  const image = new URL("/og.png", base).toString();
+export function generateMetadata(): Metadata {
+  // NEXT_PUBLIC_SITE_URL is expected to end with a trailing slash (e.g.
+  // https://89huey89.github.io/EMBERLINE/) so that the relative "og.png" below
+  // resolves inside the project path rather than at the domain root.
+  const base = new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000");
+  const image = new URL("og.png", base).toString();
   return {
     metadataBase: base,
     title: "EMBERLINE — Civilian Orbital Freight",

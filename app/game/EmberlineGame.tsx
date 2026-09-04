@@ -12,6 +12,10 @@ import {
   WORLD,
 } from "./data";
 import type { CargoKind, ContractDefinition, ShipDefinition, Station } from "./types";
+import { drawCargoUnit } from "./art/cargo";
+import { drawPlanet, planetParallax } from "./art/planets";
+import { drawShipPortrait, shipArtFor } from "./art/ships";
+import { berthPoint, drawStation } from "./art/stations";
 
 const TAU = Math.PI * 2;
 const SAVE_KEY = "emberline-save-v1";
@@ -43,6 +47,20 @@ type Particle = {
   maxLife: number;
   size: number;
   color: string;
+};
+
+/** A ship drawn at an arbitrary pose: used by the flight view and by the title composition. */
+type ShipPose = {
+  x: number;
+  y: number;
+  angle: number;
+  shipId: ShipDefinition["id"];
+  cargo: CargoItem[];
+  upgrades: string[];
+  thrusting: boolean;
+  showLabel: boolean;
+  /** Extra multiplier on the art's own world scale. 1 = flight scale. */
+  scale?: number;
 };
 
 type GameMutable = {
@@ -111,10 +129,61 @@ const contractById = (id: string | null) => CONTRACTS.find((contract) => contrac
 const money = (value: number) => `₡${Math.max(0, Math.round(value)).toLocaleString("en-US")}`;
 const seconds = (value: number) => `${Math.max(0, Math.floor(value / 60))}:${String(Math.max(0, Math.floor(value % 60))).padStart(2, "0")}`;
 
+/* ------------------------------------------------------------------ */
+/* Title composition                                                    */
+/*                                                                      */
+/* The opening frame is posed by hand, not by the simulation: a loaded   */
+/* Kestrel low left, engine lit, nose on Pilgrim Exchange, with Cinder   */
+/* filling the right edge. See SPEC / ART_DIRECTION.md.                  */
+/* ------------------------------------------------------------------ */
+const TITLE_STATION = STATIONS[0];
+const TITLE_CARGO: CargoItem[] = [
+  { id: "title-water", kind: "water", condition: 1, source: "contract", value: 0 },
+  { id: "title-metals", kind: "metals", condition: 1, source: "contract", value: 0 },
+];
+/** Screen fractions the composition places things at, per breakpoint. */
+const TITLE_VIEW = {
+  wide: { zoom: 0.78, station: { x: 0.55, y: 0.55 }, ship: { x: 0.27, y: 0.76 }, shipScale: 2.4 },
+  narrow: { zoom: 0.5, station: { x: 0.56, y: 0.6 }, ship: { x: 0.5, y: 0.8 }, shipScale: 1.8 },
+};
+
+/** Camera that lands Pilgrim on its mark, plus the world point the truck flies at. */
+function titleLayout(width: number, height: number) {
+  const view = width < 760 ? TITLE_VIEW.narrow : TITLE_VIEW.wide;
+  const zoom = view.zoom;
+  const camera = {
+    zoom,
+    x: TITLE_STATION.position.x - (view.station.x * width - width / 2) / zoom,
+    y: TITLE_STATION.position.y - (view.station.y * height - height / 2) / zoom,
+  };
+  const anchor = {
+    x: camera.x + (view.ship.x * width - width / 2) / zoom,
+    y: camera.y + (view.ship.y * height - height / 2) / zoom,
+  };
+  return { camera, anchor, shipScale: view.shipScale };
+}
+
+/** Bob and sway around the anchor; nose held on Pilgrim. */
+function titleShipPose(anchor: { x: number; y: number }, scale: number, time: number): ShipPose {
+  const heading = Math.atan2(TITLE_STATION.position.y - anchor.y, TITLE_STATION.position.x - anchor.x);
+  return {
+    x: anchor.x + Math.sin(time * 0.9) * 3,
+    y: anchor.y + Math.cos(time * 0.7) * 2.5,
+    angle: heading + Math.sin(time * Math.PI) * 0.03,
+    shipId: "courier",
+    cargo: TITLE_CARGO,
+    upgrades: [],
+    thrusting: true,
+    showLabel: true,
+    scale,
+  };
+}
+
 function freshGame(): GameMutable {
   const start = STATIONS[0];
+  const berth = berthPoint(start, 100);
   return {
-    ship: { x: start.position.x - 96, y: start.position.y + 20, vx: 0, vy: 0, angle: 0, av: 0, fuel: SHIPS[0].fuelCapacity, hull: 100 },
+    ship: { x: berth.x, y: berth.y, vx: 0, vy: 0, angle: start.orientation, av: 0, fuel: SHIPS[0].fuelCapacity, hull: 100 },
     shipId: "courier",
     dockedId: start.id,
     targetId: STATIONS[1].id,
@@ -152,8 +221,10 @@ function safeLoad(): GameMutable | null {
     if (!stationById(game.dockedId) && game.dockedId) game.dockedId = "pilgrim";
     if (game.dockedId) {
       const station = stationById(game.dockedId) ?? STATIONS[0];
-      game.ship.x = station.position.x - 96;
-      game.ship.y = station.position.y + 20;
+      const berth = berthPoint(station, 100);
+      game.ship.x = berth.x;
+      game.ship.y = berth.y;
+      game.ship.angle = station.orientation;
       game.ship.vx = 0;
       game.ship.vy = 0;
     }
@@ -311,6 +382,25 @@ function useAudio() {
   return useMemo(() => ({ ensure, setEngine, tone, mute }), [ensure, mute, setEngine, tone]);
 }
 
+function ShipPortrait({ ship }: { ship: ShipDefinition }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    drawShipPortrait(ctx, ship, width, height);
+  }, [ship]);
+  return <canvas ref={ref} className="ship-portrait" aria-hidden="true" />;
+}
+
 export default function EmberlineGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameRef = useRef<GameMutable>(freshGame());
@@ -320,6 +410,7 @@ export default function EmberlineGame() {
   const actionRequestRef = useRef(false);
   const salvageSeededRef = useRef(false);
   const cameraRef = useRef({ x: -320, y: 30, zoom: 0.78 });
+  const titlePoseRef = useRef<ShipPose | null>(null);
   const starRef = useRef(Array.from({ length: 340 }, (_, index) => ({
     x: ((index * 1877) % 10000) / 10000,
     y: ((index * 3463 + 997) % 10000) / 10000,
@@ -376,16 +467,19 @@ export default function EmberlineGame() {
     game.activeContractId = contract.id;
     game.contractTime = contract.timeLimit ?? 0;
     game.targetId = contract.destination;
+    // clear of the lengthened berth: the same 24 units beyond the pad edge the staging always had
+    const staging = berthPoint(station, 182);
     game.pickups = Array.from({ length: contract.quantity }, (_, index) => {
       const spacing = (index - (contract.quantity - 1) / 2) * 52;
+      const across = 42 + spacing;
       return {
         id: `contract-${contract.id}-${index}`,
         kind: contract.cargo,
         condition: 1,
         source: "contract" as const,
         value: cargo.value,
-        x: station.position.x - 142,
-        y: station.position.y + 42 + spacing,
+        x: staging.x - Math.sin(station.orientation) * across,
+        y: staging.y + Math.cos(station.orientation) * across,
         vx: 0,
         vy: 0,
         spin: index % 2 ? -0.05 : 0.05,
@@ -402,11 +496,13 @@ export default function EmberlineGame() {
     const station = stationById(game.dockedId);
     if (!station) return;
     game.dockedId = null;
-    game.ship.x = station.position.x - 105;
-    game.ship.y = station.position.y;
-    game.ship.vx = -6;
-    game.ship.vy = 0;
-    game.ship.angle = Math.PI;
+    const clear = berthPoint(station, 105);
+    const heading = station.orientation + Math.PI;
+    game.ship.x = clear.x;
+    game.ship.y = clear.y;
+    game.ship.vx = Math.cos(heading) * 6;
+    game.ship.vy = Math.sin(heading) * 6;
+    game.ship.angle = heading;
     game.ship.av = 0;
     audio.tone("dock", muted);
     notify("Umbilicals clear. You have flight control.");
@@ -475,8 +571,9 @@ export default function EmberlineGame() {
     const game = gameRef.current;
     const cost = Math.min(900, Math.max(0, game.credits));
     const station = STATIONS[0];
+    const berth = berthPoint(station, 100);
     game.credits -= cost;
-    game.ship = { x: station.position.x - 96, y: station.position.y, vx: 0, vy: 0, angle: 0, av: 0, fuel: Math.max(20, shipById(game.shipId).fuelCapacity * 0.18), hull: Math.max(35, game.ship.hull) };
+    game.ship = { x: berth.x, y: berth.y, vx: 0, vy: 0, angle: station.orientation, av: 0, fuel: Math.max(20, shipById(game.shipId).fuelCapacity * 0.18), hull: Math.max(35, game.ship.hull) };
     game.dockedId = station.id;
     game.cargo = game.cargo.filter((item) => item.source === "salvage");
     game.pickups = [];
@@ -576,12 +673,13 @@ export default function EmberlineGame() {
 
     const dock = (game: GameMutable, station: Station) => {
       game.dockedId = station.id;
-      game.ship.x = station.position.x - 96;
-      game.ship.y = station.position.y;
+      const berth = berthPoint(station, 100);
+      game.ship.x = berth.x;
+      game.ship.y = berth.y;
       game.ship.vx = 0;
       game.ship.vy = 0;
       game.ship.av = 0;
-      game.ship.angle = 0;
+      game.ship.angle = station.orientation;
       game.shake = 4;
       audio.tone("dock", muted);
 
@@ -633,6 +731,33 @@ export default function EmberlineGame() {
       notify(note, 6);
     };
 
+    /* The truck in the title composition burns while the simulation is idle. */
+    const titleExhaust = (game: GameMutable, dt: number) => {
+      const pose = titlePoseRef.current;
+      if (!pose) return;
+      const art = shipArtFor(shipById(pose.shipId));
+      const scale = art.scale * (pose.scale ?? 1);
+      const behind = -art.exhaust * scale;
+      if (Math.random() < dt * 28) {
+        game.particles.push({
+          x: pose.x - Math.cos(pose.angle) * behind,
+          y: pose.y - Math.sin(pose.angle) * behind,
+          vx: -Math.cos(pose.angle) * (45 + Math.random() * 35) * (pose.scale ?? 1),
+          vy: -Math.sin(pose.angle) * (45 + Math.random() * 35) * (pose.scale ?? 1),
+          life: 0.7,
+          maxLife: 0.7,
+          size: (2 + Math.random() * 3) * (pose.scale ?? 1),
+          color: Math.random() > 0.4 ? "#e68449" : "#f6d27b",
+        });
+      }
+      game.particles.forEach((particle) => {
+        particle.x += particle.vx * dt;
+        particle.y += particle.vy * dt;
+        particle.life -= dt;
+      });
+      game.particles = game.particles.filter((particle) => particle.life > 0).slice(-160);
+    };
+
     const update = (game: GameMutable, dt: number) => {
       game.elapsed += dt;
       if (!salvageSeededRef.current) {
@@ -642,6 +767,7 @@ export default function EmberlineGame() {
       }
       if (screen !== "game" || game.paused || mapOpen || helpOpen) {
         audio.setEngine(0, muted);
+        if (screen === "title") titleExhaust(game, dt);
         return;
       }
 
@@ -727,25 +853,6 @@ export default function EmberlineGame() {
         const grav = Math.min(34, body.gravity / Math.max(42000, distSq));
         game.ship.vx += (dx / Math.max(1, dist)) * grav * dt;
         game.ship.vy += (dy / Math.max(1, dist)) * grav * dt;
-        if (dist < body.radius + 18) {
-          const nx = -dx / Math.max(1, dist);
-          const ny = -dy / Math.max(1, dist);
-          game.ship.x = body.position.x + nx * (body.radius + 19);
-          game.ship.y = body.position.y + ny * (body.radius + 19);
-          const inward = game.ship.vx * -nx + game.ship.vy * -ny;
-          const impact = Math.hypot(game.ship.vx, game.ship.vy);
-          if (inward > 0) {
-            game.ship.vx += nx * inward * 1.25;
-            game.ship.vy += ny * inward * 1.25;
-          }
-          if (impact > 18) {
-            game.ship.hull = Math.max(0, game.ship.hull - (impact - 18) * 0.32);
-            game.cargo.forEach((item) => { item.condition = Math.max(0.28, item.condition - impact * 0.0025); });
-            game.shake = Math.min(16, impact * 0.12);
-            audio.tone("impact", muted);
-            notify(`Hull contact at ${Math.round(impact)} m/s. Cargo restraints report the shock.`);
-          }
-        }
       }
 
       const accelerationLoad = appliedForce / Math.max(1, totalMass);
@@ -770,9 +877,11 @@ export default function EmberlineGame() {
       });
 
       if (engineAmount > 0.2 && Math.random() < dt * 28) {
+        const art = shipArtFor(shipDef);
+        const exhaust = -art.exhaust * art.scale;
         game.particles.push({
-          x: game.ship.x - Math.cos(game.ship.angle) * 25,
-          y: game.ship.y - Math.sin(game.ship.angle) * 25,
+          x: game.ship.x - Math.cos(game.ship.angle) * exhaust,
+          y: game.ship.y - Math.sin(game.ship.angle) * exhaust,
           vx: game.ship.vx - Math.cos(game.ship.angle) * (45 + Math.random() * 35),
           vy: game.ship.vy - Math.sin(game.ship.angle) * (45 + Math.random() * 35),
           life: 0.7,
@@ -795,7 +904,8 @@ export default function EmberlineGame() {
         game.cargo = [];
         game.pickups = [];
         game.activeContractId = null;
-        game.ship = { x: STATIONS[0].position.x - 96, y: STATIONS[0].position.y, vx: 0, vy: 0, angle: 0, av: 0, fuel: 24, hull: 52 };
+        const rescue = berthPoint(STATIONS[0], 100);
+        game.ship = { x: rescue.x, y: rescue.y, vx: 0, vy: 0, angle: STATIONS[0].orientation, av: 0, fuel: 24, hull: 52 };
         game.dockedId = "pilgrim";
         salvageSeededRef.current = false;
         notify("Pilgrim rescue recovered the hull. Insurance excess: ₡1,400.", 7);
@@ -827,293 +937,42 @@ export default function EmberlineGame() {
     };
 
     const drawCargo = (ctx: CanvasRenderingContext2D, kind: CargoKind, size = 1, condition = 1) => {
-      const cargo = CARGO[kind];
-      ctx.save();
-      ctx.scale(size, size);
-      if (cargo.shape === "tank") {
-        ctx.fillStyle = "#20292a";
-        ctx.fillRect(-14, -10, 28, 20);
-        ctx.fillStyle = cargo.color;
-        ctx.beginPath();
-        ctx.roundRect(-11, -13, 22, 26, 9);
-        ctx.fill();
-        ctx.strokeStyle = cargo.accent;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.fillStyle = "#14191a";
-        ctx.fillRect(-13, -7, 26, 3);
-        ctx.fillRect(-13, 5, 26, 3);
-        ctx.fillStyle = cargo.accent;
-        ctx.fillRect(-3, -17, 6, 4);
-      } else if (cargo.shape === "ore") {
-        ctx.fillStyle = "#292725";
-        ctx.fillRect(-15, -11, 30, 22);
-        ctx.strokeStyle = cargo.accent;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(-15, -11, 30, 22);
-        ctx.fillStyle = cargo.color;
-        for (let i = 0; i < 7; i += 1) {
-          ctx.beginPath();
-          ctx.arc(-10 + (i * 13) % 23, -5 + (i * 9) % 12, 4 + (i % 3), 0, TAU);
-          ctx.fill();
-        }
-      } else if (cargo.shape === "machine") {
-        ctx.fillStyle = cargo.color;
-        ctx.fillRect(-18, -9, 31, 18);
-        ctx.fillStyle = "#22201c";
-        ctx.beginPath();
-        ctx.arc(10, 0, 9, 0, TAU);
-        ctx.fill();
-        ctx.strokeStyle = cargo.accent;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(10, 0, 5, 0, TAU);
-        ctx.stroke();
-        ctx.fillStyle = cargo.accent;
-        ctx.fillRect(-20, -13, 7, 26);
-      } else {
-        ctx.fillStyle = cargo.color;
-        ctx.fillRect(-15, -11, 30, 22);
-        ctx.strokeStyle = cargo.accent;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(-15, -11, 30, 22);
-        ctx.strokeStyle = "rgba(255,255,255,.18)";
-        ctx.beginPath();
-        ctx.moveTo(-15, -11); ctx.lineTo(15, 11);
-        ctx.moveTo(15, -11); ctx.lineTo(-15, 11);
-        ctx.stroke();
-      }
-      ctx.fillStyle = condition < 0.72 ? "#e9613d" : "#f0e3c3";
-      ctx.font = "700 6px ui-monospace, monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(cargo.short, 0, 2);
-      ctx.restore();
+      drawCargoUnit(ctx, kind, { size, condition, time: gameRef.current.elapsed });
     };
 
-    const drawShip = (ctx: CanvasRenderingContext2D, game: GameMutable, zoom: number) => {
-      const ship = shipById(game.shipId);
-      const scale = ship.id === "courier" ? 0.9 : ship.id === "hauler" ? 1.35 : 1.12;
+    /** Paints any ship at any pose: the flown vessel, or the truck in the title composition. */
+    const drawShip = (ctx: CanvasRenderingContext2D, pose: ShipPose, time: number) => {
+      const ship = shipById(pose.shipId);
+      const art = shipArtFor(ship);
       ctx.save();
-      ctx.translate(game.ship.x, game.ship.y);
-      ctx.rotate(game.ship.angle);
+      const scale = art.scale * (pose.scale ?? 1);
+      ctx.translate(pose.x, pose.y);
+      ctx.rotate(pose.angle);
       ctx.scale(scale, scale);
-      ctx.lineJoin = "round";
 
-      game.cargo.forEach((item, index) => {
-        const row = index % 2 === 0 ? -1 : 1;
-        const column = Math.floor(index / 2);
-        const x = -2 - column * 24;
-        const y = row * (ship.id === "hauler" ? 24 : 19);
-        ctx.strokeStyle = "#817158";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(x, row * 8);
-        ctx.lineTo(x, y - row * 9);
-        ctx.stroke();
-        ctx.save();
-        ctx.translate(x, y);
-        drawCargo(ctx, item.kind, ship.id === "hauler" ? 0.92 : 0.72, item.condition);
-        ctx.restore();
-      });
+      const paintCargo = () => {
+        pose.cargo.forEach((item, index) => {
+          const at = art.clamps[index] ?? art.clamps[art.clamps.length - 1];
+          ctx.save();
+          ctx.translate(at.x, at.y);
+          drawCargo(ctx, item.kind, art.cargoScale, item.condition);
+          ctx.restore();
+        });
+      };
+      const paintClamps = () => {
+        const slots = ship.slots + (pose.upgrades.includes("clamps") ? 1 : 0);
+        art.clamps.slice(0, slots).forEach((_, slot) => art.drawClamp?.(ctx, slot, slot < pose.cargo.length));
+      };
 
-      if (game.upgrades.includes("tank")) {
-        ctx.fillStyle = "#4a5c5e";
-        ctx.beginPath();
-        ctx.roundRect(-22, -6, 32, 12, 6);
-        ctx.fill();
-        ctx.strokeStyle = "#8facaa";
-        ctx.stroke();
-      }
-
-      ctx.strokeStyle = "#655e51";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(-22, -11); ctx.lineTo(12, -11); ctx.lineTo(24, 0); ctx.lineTo(12, 11); ctx.lineTo(-22, 11);
-      ctx.stroke();
-      const hull = ctx.createLinearGradient(-20, -12, 22, 12);
-      hull.addColorStop(0, "#5f5c53");
-      hull.addColorStop(0.45, ship.color);
-      hull.addColorStop(1, "#857c69");
-      ctx.fillStyle = hull;
-      ctx.beginPath();
-      ctx.moveTo(-17, -10); ctx.lineTo(11, -10); ctx.lineTo(24, 0); ctx.lineTo(11, 10); ctx.lineTo(-17, 10); ctx.closePath();
-      ctx.fill();
-      ctx.strokeStyle = "#201f1b";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-
-      ctx.fillStyle = "#202728";
-      ctx.beginPath();
-      ctx.moveTo(11, -7); ctx.lineTo(20, -1); ctx.lineTo(11, -1); ctx.closePath(); ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(11, 7); ctx.lineTo(20, 1); ctx.lineTo(11, 1); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = "#d9b04c";
-      ctx.fillRect(2, -10, 3, 20);
-      ctx.fillStyle = "#ba5638";
-      ctx.fillRect(-4, -9, 2, 18);
-
-      ctx.fillStyle = "#272923";
-      ctx.beginPath();
-      ctx.moveTo(-18, -9); ctx.lineTo(-27, -13); ctx.lineTo(-27, 13); ctx.lineTo(-18, 9); ctx.closePath();
-      ctx.fill();
-      ctx.strokeStyle = "#80765f";
-      ctx.stroke();
-      ctx.fillStyle = "#c4743f";
-      ctx.fillRect(-29, -8, 4, 16);
-
-      const thrusting = keysRef.current.w || keysRef.current.arrowup;
-      if (thrusting && game.ship.fuel > 0 && screen === "game") {
-        const flame = ctx.createLinearGradient(-65, 0, -24, 0);
-        flame.addColorStop(0, "rgba(217,100,49,0)");
-        flame.addColorStop(0.65, "rgba(226,116,62,.75)");
-        flame.addColorStop(1, "#f7e0a4");
-        ctx.fillStyle = flame;
-        ctx.beginPath();
-        ctx.moveTo(-27, -7); ctx.lineTo(-50 - Math.random() * 12, 0); ctx.lineTo(-27, 7); ctx.closePath();
-        ctx.fill();
-      }
-
-      if (game.upgrades.includes("engine")) {
-        ctx.strokeStyle = "#d8a24b";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(-33, -10, 6, 20);
-      }
-      if (game.upgrades.includes("rcs")) {
-        ctx.fillStyle = "#6fa7a2";
-        ctx.fillRect(-10, -15, 7, 5);
-        ctx.fillRect(-10, 10, 7, 5);
-        ctx.fillRect(11, -12, 5, 4);
-        ctx.fillRect(11, 8, 5, 4);
-      }
-      if (game.upgrades.includes("scanner")) {
-        ctx.strokeStyle = "#c8b66b";
-        ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(2, -10); ctx.lineTo(5, -19); ctx.lineTo(9, -21); ctx.stroke();
-        ctx.beginPath(); ctx.arc(9, -21, 2, 0, TAU); ctx.stroke();
-      }
-      if (game.upgrades.includes("cryo")) {
-        ctx.strokeStyle = "#73c4c0";
-        ctx.beginPath(); ctx.moveTo(-5, 10); ctx.lineTo(-1, 16); ctx.lineTo(8, 16); ctx.stroke();
-      }
-
-      ctx.fillStyle = "#f6e8b4";
-      ctx.beginPath(); ctx.arc(17, -8, 1.5, 0, TAU); ctx.fill();
-      ctx.fillStyle = "#d44f36";
-      ctx.beginPath(); ctx.arc(17, 8, 1.5, 0, TAU); ctx.fill();
-      if (zoom > 0.75) {
-        ctx.fillStyle = "rgba(16,20,19,.7)";
-        ctx.font = "700 5px ui-monospace, monospace";
-        ctx.fillText(ship.model, -5, 2);
-      }
-      ctx.restore();
-    };
-
-    const drawBody = (ctx: CanvasRenderingContext2D, body: (typeof BODIES)[number], camera: typeof cameraRef.current) => {
-      const radius = body.radius;
-      ctx.save();
-      ctx.translate(body.position.x, body.position.y);
-      if (body.atmosphere) {
-        const atmosphere = ctx.createRadialGradient(0, 0, radius * 0.76, 0, 0, radius * 1.12);
-        atmosphere.addColorStop(0, "rgba(0,0,0,0)");
-        atmosphere.addColorStop(0.86, `${body.atmosphere}55`);
-        atmosphere.addColorStop(1, `${body.atmosphere}00`);
-        ctx.fillStyle = atmosphere;
-        ctx.beginPath(); ctx.arc(0, 0, radius * 1.13, 0, TAU); ctx.fill();
-      }
-      const globe = ctx.createRadialGradient(-radius * 0.38, -radius * 0.48, radius * 0.1, 0, 0, radius * 1.15);
-      globe.addColorStop(0, body.id === "cinder" ? "#dc9560" : body.id === "morrow" ? "#a9c1bd" : "#96806a");
-      globe.addColorStop(0.48, body.color);
-      globe.addColorStop(0.8, "#34261f");
-      globe.addColorStop(1, "#090b0b");
-      ctx.fillStyle = globe;
-      ctx.beginPath(); ctx.arc(0, 0, radius, 0, TAU); ctx.fill();
-      ctx.save();
-      ctx.beginPath(); ctx.arc(0, 0, radius - 1, 0, TAU); ctx.clip();
-      ctx.globalAlpha = 0.18;
-      for (let i = 0; i < 13; i += 1) {
-        ctx.strokeStyle = i % 2 ? "#f4c486" : "#3d4e4e";
-        ctx.lineWidth = 7 + (i % 4) * 5;
-        ctx.beginPath();
-        ctx.ellipse(-radius * 0.1, -radius * 0.7 + i * radius * 0.12, radius * (0.78 + (i % 3) * 0.08), radius * 0.07, -0.18, 0, TAU);
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 0.5;
-      const night = ctx.createLinearGradient(-radius, 0, radius, 0);
-      night.addColorStop(0, "rgba(3,6,7,.92)");
-      night.addColorStop(0.52, "rgba(3,6,7,.34)");
-      night.addColorStop(0.7, "rgba(3,6,7,0)");
-      ctx.fillStyle = night;
-      ctx.fillRect(-radius, -radius, radius * 2, radius * 2);
-      if (body.id === "cinder") {
-        ctx.fillStyle = "#dda34d";
-        for (let i = 0; i < 54; i += 1) {
-          const angle = i * 2.37;
-          const r = radius * (0.25 + ((i * 31) % 60) / 100);
-          const x = Math.cos(angle) * r - radius * 0.28;
-          const y = Math.sin(angle) * r;
-          if (x < radius * 0.12) ctx.fillRect(x, y, 1.6, 1.1);
-        }
-      }
-      ctx.restore();
-      ctx.strokeStyle = body.atmosphere ?? "#8c7961";
-      ctx.lineWidth = 3 / Math.max(0.3, camera.zoom);
-      ctx.beginPath(); ctx.arc(0, 0, radius, 0, TAU); ctx.stroke();
-      ctx.restore();
-    };
-
-    const drawStation = (ctx: CanvasRenderingContext2D, station: Station, time: number, target: boolean) => {
-      const s = station.size === "large" ? 1.22 : station.size === "small" ? 0.76 : 1;
-      ctx.save();
-      ctx.translate(station.position.x, station.position.y);
-      ctx.rotate(station.orientation);
-      ctx.scale(s, s);
-      if (target) {
-        ctx.strokeStyle = "rgba(224,175,84,.22)";
-        ctx.lineWidth = 1.4;
-        ctx.setLineDash([7, 8]);
-        ctx.beginPath(); ctx.arc(0, 0, 84 + Math.sin(time * 2) * 4, 0, TAU); ctx.stroke();
-        ctx.setLineDash([]);
-      }
-      ctx.strokeStyle = "#7c725f";
-      ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.moveTo(-62, 0); ctx.lineTo(58, 0); ctx.stroke();
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.moveTo(-58, -10); ctx.lineTo(55, 10); ctx.moveTo(-58, 10); ctx.lineTo(55, -10);
-      for (let x = -55; x <= 45; x += 20) { ctx.moveTo(x, -11); ctx.lineTo(x + 10, 11); }
-      ctx.stroke();
-      ctx.fillStyle = "#393a35";
-      ctx.fillRect(-24, -16, 48, 32);
-      ctx.strokeStyle = station.color;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(-24, -16, 48, 32);
-      ctx.fillStyle = "#171b1b";
-      ctx.fillRect(-17, -11, 34, 22);
-      ctx.fillStyle = station.color;
-      for (let i = -12; i <= 12; i += 8) ctx.fillRect(i, -7, 3, 2);
-      ctx.fillStyle = "#6e6b5f";
-      ctx.beginPath(); ctx.roundRect(-48, -25, 17, 50, 8); ctx.fill();
-      ctx.beginPath(); ctx.roundRect(33, -23, 15, 46, 7); ctx.fill();
-      ctx.strokeStyle = "#a59a7d";
-      ctx.stroke();
-      ctx.fillStyle = "#2c3130";
-      ctx.fillRect(-70, -30, 18, 60);
-      ctx.fillStyle = station.id === "bluehour" || station.id === "quiet" ? "#456b6a" : "#69442e";
-      for (let y = -27; y < 28; y += 7) ctx.fillRect(-68, y, 14, 3);
-      ctx.strokeStyle = "#96886c";
-      ctx.beginPath(); ctx.moveTo(24, 0); ctx.lineTo(67, -34); ctx.lineTo(72, -34); ctx.stroke();
-      ctx.beginPath(); ctx.arc(73, -35, 8, Math.PI * 0.1, Math.PI * 1.25); ctx.stroke();
-      ctx.fillStyle = station.color;
-      ctx.beginPath(); ctx.arc(-62, 0, 3 + Math.sin(time * 3) * 0.7, 0, TAU); ctx.fill();
-      ctx.fillStyle = "#ca493c";
-      ctx.beginPath(); ctx.arc(58, 0, 2.2, 0, TAU); ctx.fill();
-      if (station.size === "large") {
-        ctx.strokeStyle = "#5b5549";
-        ctx.lineWidth = 6;
-        ctx.beginPath(); ctx.arc(0, 0, 41, 0, TAU); ctx.stroke();
-        ctx.strokeStyle = station.color;
-        ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(0, 0, 46, 0, TAU); ctx.stroke();
+      const state = { upgrades: pose.upgrades, thrusting: pose.thrusting, showLabel: pose.showLabel, time };
+      if (art.cargoLayer === "under") {
+        paintClamps();
+        paintCargo();
+        art.drawHull(ctx, state);
+      } else {
+        art.drawHull(ctx, state);
+        paintCargo();
+        paintClamps();
       }
       ctx.restore();
     };
@@ -1134,10 +993,17 @@ export default function EmberlineGame() {
       const target = stationById(game.targetId);
       const targetDist = target ? distance(game.ship, target.position) : 9999;
       const desiredZoom = game.dockedId ? 1.25 : targetDist < 260 ? 1.12 : clamp(0.88 - speed / 340, 0.48, 0.92);
-      cam.zoom = lerp(cam.zoom, screen === "title" ? 0.78 : desiredZoom, 0.025);
-      const lead = screen === "title" ? { x: -260, y: 60 } : { x: game.ship.vx * 1.15, y: game.ship.vy * 1.15 };
-      cam.x = lerp(cam.x, (screen === "title" ? -210 : game.ship.x) + lead.x, screen === "title" ? 0.01 : 0.055);
-      cam.y = lerp(cam.y, (screen === "title" ? 10 : game.ship.y) + lead.y, screen === "title" ? 0.01 : 0.055);
+      const title = screen === "title" ? titleLayout(width, height) : null;
+      if (title) {
+        cam.zoom = lerp(cam.zoom, title.camera.zoom, 0.02);
+        cam.x = lerp(cam.x, title.camera.x, 0.02);
+        cam.y = lerp(cam.y, title.camera.y, 0.02);
+        titlePoseRef.current = titleShipPose(title.anchor, title.shipScale, game.elapsed);
+      } else {
+        cam.zoom = lerp(cam.zoom, desiredZoom, 0.025);
+        cam.x = lerp(cam.x, game.ship.x + game.ship.vx * 1.15, 0.055);
+        cam.y = lerp(cam.y, game.ship.y + game.ship.vy * 1.15, 0.055);
+      }
       const shakeX = (Math.random() - 0.5) * game.shake;
       const shakeY = (Math.random() - 0.5) * game.shake;
 
@@ -1180,7 +1046,14 @@ export default function EmberlineGame() {
       }
       context.restore();
 
-      BODIES.forEach((body) => drawBody(context, body, cam));
+      /* Planets sit behind the traffic and drift with parallax, not with the world. */
+      BODIES.forEach((body) => {
+        const at = planetParallax(body, cam);
+        context.save();
+        context.translate(at.x, at.y);
+        drawPlanet(context, body, { time: game.elapsed, zoom: cam.zoom });
+        context.restore();
+      });
 
       if (target && !game.dockedId) {
         context.strokeStyle = "rgba(211,165,79,.18)";
@@ -1190,7 +1063,13 @@ export default function EmberlineGame() {
         context.setLineDash([]);
       }
 
-      STATIONS.forEach((station) => drawStation(context, station, game.elapsed, station.id === game.targetId));
+      STATIONS.forEach((station) => drawStation(context, station, {
+        time: game.elapsed,
+        zoom: cam.zoom,
+        target: station.id === game.targetId,
+        shipSpeed: speed,
+        shipDistance: distance(game.ship, station.position),
+      }));
       game.pickups.forEach((pickup) => {
         if (!pickup.discovered && pickup.source === "salvage") return;
         context.save();
@@ -1211,7 +1090,7 @@ export default function EmberlineGame() {
       });
       context.globalAlpha = 1;
 
-      if (!game.dockedId) {
+      if (!game.dockedId && !title) {
         context.strokeStyle = "rgba(115,198,187,.62)";
         context.lineWidth = 1.2 / cam.zoom;
         context.beginPath();
@@ -1221,7 +1100,17 @@ export default function EmberlineGame() {
         context.fillStyle = "rgba(115,198,187,.85)";
         context.beginPath(); context.arc(game.ship.x + game.ship.vx * 3.2, game.ship.y + game.ship.vy * 3.2, 2.5 / cam.zoom, 0, TAU); context.fill();
       }
-      drawShip(context, game, cam.zoom);
+      const shipPose: ShipPose = title && titlePoseRef.current ? titlePoseRef.current : {
+        x: game.ship.x,
+        y: game.ship.y,
+        angle: game.ship.angle,
+        shipId: game.shipId,
+        cargo: game.cargo,
+        upgrades: game.upgrades,
+        thrusting: Boolean((keysRef.current.w || keysRef.current.arrowup) && game.ship.fuel > 0 && screen === "game"),
+        showLabel: cam.zoom > 0.75,
+      };
+      drawShip(context, shipPose, game.elapsed);
 
       if (cam.zoom > 0.42) {
         context.font = `${11 / cam.zoom}px ui-monospace, monospace`;
@@ -1403,7 +1292,7 @@ export default function EmberlineGame() {
                   <div className="ship-list">
                     {SHIPS.map((ship) => {
                       const owned = ui.ownedShips.includes(ship.id);
-                      return <article className={`${ui.shipId === ship.id ? "selected" : ""} ${!docked.services.includes("ships") ? "locked" : ""}`} key={ship.id}><div className={`ship-silhouette ${ship.id}`}><i /><i /><i /></div><span>{ship.role.toUpperCase()}</span><h3>{ship.name} <small>{ship.model}</small></h3><p>{ship.description}</p><div className="ship-stats"><span>{ship.slots} clamps</span><span>{ship.fuelCapacity} fuel</span><span>{ship.dryMass} t dry</span></div><button disabled={!docked.services.includes("ships") || ui.shipId === ship.id} onClick={() => buyOrSwitchShip(ship.id)}>{ui.shipId === ship.id ? "Active vessel" : owned ? "Move to active berth" : `Purchase · ${money(ship.cost)}`}</button></article>;
+                      return <article className={`${ui.shipId === ship.id ? "selected" : ""} ${!docked.services.includes("ships") ? "locked" : ""}`} key={ship.id}><ShipPortrait ship={ship} /><span>{ship.role.toUpperCase()}</span><h3>{ship.name} <small>{ship.model}</small></h3><p>{ship.description}</p><div className="ship-stats"><span>{ship.slots} clamps</span><span>{ship.fuelCapacity} fuel</span><span>{ship.dryMass} t dry</span></div><button disabled={!docked.services.includes("ships") || ui.shipId === ship.id} onClick={() => buyOrSwitchShip(ship.id)}>{ui.shipId === ship.id ? "Active vessel" : owned ? "Move to active berth" : `Purchase · ${money(ship.cost)}`}</button></article>;
                     })}
                   </div>
                 )}
@@ -1442,9 +1331,7 @@ export default function EmberlineGame() {
           <div className="map-copy"><p className="eyebrow">COMPRESSED NAVIGATION CHART / NOT TO SCALE</p><h2 id="map-title">The Cinder system</h2><p>Learn the working lines. Mine to refinery, refinery to shipyard, ice moon to habitat. The best route is the one your current ship can fly cleanly.</p></div>
           <div className="system-map">
             <div className="orbit orbit-one" /><div className="orbit orbit-two" />
-            <div className="map-body cinder"><i /><span>CINDER</span></div>
-            <div className="map-body morrow"><i /><span>MORROW</span></div>
-            <div className="map-body brindle"><i /><span>BRINDLE</span></div>
+            {BODIES.map((body) => <div className={`map-body ${body.id}`} key={body.id}><i /><span>{body.name.toUpperCase()}</span></div>)}
             <div className="wake-zone"><i />THE WAKE</div>
             {STATIONS.map((station) => <button key={station.id} className={`map-station station-${station.id} ${station.id === ui.targetId ? "active" : ""}`} onClick={() => setTarget(station.id)}><i /><b>{station.callSign}</b><span>{station.name}</span></button>)}
           </div>
@@ -1462,7 +1349,7 @@ export default function EmberlineGame() {
             <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward. <kbd>A</kbd>/<kbd>D</kbd> rotate. <kbd>Q</kbd>/<kbd>E</kbd> strafe. The teal line is your true velocity.</p></article>
             <article><span>04</span><h3>Make a clean arrival</h3><p>Hold <kbd>SHIFT</kbd> for assisted braking. Enter a station’s capture envelope below 36 m/s, then press <kbd>SPACE</kbd>.</p></article>
             <article><span>05</span><h3>Read gravity</h3><p>Curved guide rings mark strong gravity wells. Close planetary passes bend your route and can save propellant.</p></article>
-            <article><span>06</span><h3>Work The Wake</h3><p>Unmarked debris lies northeast of Cinder. Fit a better scanner, recover useful objects, and deliver salvage to any port.</p></article>
+            <article><span>06</span><h3>Work The Wake</h3><p>Unmarked debris lies northeast of Rayleigh. Fit a better scanner, recover useful objects, and deliver salvage to any port.</p></article>
           </div>
           <button className="primary-button" onClick={() => setHelpOpen(false)}>Return to the flight deck <span>→</span></button>
         </section>
