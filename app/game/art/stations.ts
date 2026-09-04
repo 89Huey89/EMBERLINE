@@ -1,4 +1,4 @@
-import type { Station } from "../types";
+import type { Station, Vec2 } from "../types";
 import { PAINT } from "./ships";
 
 /**
@@ -33,21 +33,32 @@ export type StationArtState = {
   zoom: number;
   /** True for the station the pilot has targeted. */
   target: boolean;
-  /** Ship speed, m/s. Drives the target ring's approach colour. */
-  shipSpeed: number;
+  /**
+   * Ship speed RELATIVE to this station, m/s. Drives the target ring's
+   * approach colour: a port is moving, so closing speed is the number that
+   * decides whether an arrival is clean, not speed over the star system.
+   */
+  closingSpeed: number;
   /** Ship distance to this station, world units. */
   shipDistance: number;
+  /** Where the station is now. Stations orbit; see `orbits.ts`. */
+  at: Vec2;
 };
 
 /**
  * A point `distance` out from the hub along the berth arm, in world
  * space: station-local (-distance, 0) rotated by the station's
- * orientation. The pad is centred on `berthPoint(station, 100)`.
+ * orientation. The pad is centred on `berthPoint(station, 100, at)`.
+ *
+ * `at` is where the station is now — stations orbit, so the berth moves
+ * with them. It defaults to the authored anchor position, which is correct
+ * for the menus and portraits and for the start of a shift, but flight code
+ * must pass the live pose from `stationPose`.
  */
-export function berthPoint(station: Station, distance: number) {
+export function berthPoint(station: Station, distance: number, at: Vec2 = station.position) {
   return {
-    x: station.position.x - Math.cos(station.orientation) * distance,
-    y: station.position.y - Math.sin(station.orientation) * distance,
+    x: at.x - Math.cos(station.orientation) * distance,
+    y: at.y - Math.sin(station.orientation) * distance,
   };
 }
 
@@ -72,7 +83,7 @@ export function stationScale(station: Station) {
  * leaves the approach corridor to the pad open from the front and solid from
  * every other angle: the way in is the way the lights point.
  */
-export function stationColliders(station: Station) {
+export function stationColliders(station: Station, at: Vec2 = station.position) {
   const scale = stationScale(station);
   const cos = Math.cos(station.orientation);
   const sin = Math.sin(station.orientation);
@@ -83,8 +94,8 @@ export function stationColliders(station: Station) {
     [140, 38], // solar array
   ];
   return local.map(([along, radius]) => ({
-    x: station.position.x + cos * along * scale,
-    y: station.position.y + sin * along * scale,
+    x: at.x + cos * along * scale,
+    y: at.y + sin * along * scale,
     r: radius * scale,
   }));
 }
@@ -627,13 +638,13 @@ function drawBerth(ctx: CanvasRenderingContext2D, scale: number, time: number, w
 /* Entry point                                                          */
 /* ------------------------------------------------------------------ */
 export function drawStation(ctx: CanvasRenderingContext2D, station: Station, state: StationArtState) {
-  const { time, zoom, target, shipSpeed, shipDistance } = state;
+  const { time, zoom, target, closingSpeed, shipDistance, at } = state;
   const scale = stationScale(station);
   const cold = station.id === "bluehour" || station.id === "quiet";
   const work = cold ? PAINT.teal : PAINT.marker;
 
   ctx.save();
-  ctx.translate(station.position.x, station.position.y);
+  ctx.translate(at.x, at.y);
   ctx.rotate(station.orientation);
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
@@ -648,9 +659,9 @@ export function drawStation(ctx: CanvasRenderingContext2D, station: Station, sta
 
   /* Capture envelope, in world space: what the docking clamp can reach. */
   ctx.beginPath();
-  ctx.arc(station.position.x, station.position.y, BERTH_CAPTURE, 0, TAU);
+  ctx.arc(at.x, at.y, BERTH_CAPTURE, 0, TAU);
   if (target) {
-    const fast = shipSpeed > 36;
+    const fast = closingSpeed > 36;
     const inside = shipDistance < BERTH_CAPTURE;
     ctx.strokeStyle = fast ? PAINT.tail : inside ? PAINT.teal : PAINT.amber;
     ctx.globalAlpha = fast ? 0.55 : inside ? 0.8 + Math.sin(time * 4) * 0.2 : 0.45;

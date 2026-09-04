@@ -72,6 +72,15 @@ export const BODIES: CelestialBody[] = [
   },
 ];
 
+/**
+ * The ports.
+ *
+ * Each `position` is where the station stands at the start of a shift and is
+ * also its orbit: distance from the primary is the radius, bearing is the
+ * phase. `orbit.period` is authored for play rather than derived from the
+ * primary's mass — see `orbits.ts` for why — but the periods are ordered as
+ * Kepler would order them, so the wider orbits are the slower ones.
+ */
 export const STATIONS: Station[] = [
   {
     id: "pilgrim",
@@ -79,6 +88,7 @@ export const STATIONS: Station[] = [
     callSign: "PX-01",
     kind: "commerce & habitation",
     position: { x: -1975, y: 100 },
+    orbit: { around: "cinder", period: 900 },
     color: "#d9b15f",
     orientation: 0.08,
     size: "standard",
@@ -93,6 +103,7 @@ export const STATIONS: Station[] = [
     callSign: "SN-44",
     kind: "ore refinery",
     position: { x: 1975, y: 1750 },
+    orbit: { around: "cinder", period: 1220 },
     color: "#d66b3c",
     orientation: -0.55,
     size: "large",
@@ -107,6 +118,7 @@ export const STATIONS: Station[] = [
     callSign: "AG-17",
     kind: "shipyard",
     position: { x: -2900, y: 2300 },
+    orbit: { around: "cinder", period: 2100 },
     color: "#ca8e52",
     orientation: 0.35,
     size: "large",
@@ -121,6 +133,7 @@ export const STATIONS: Station[] = [
     callSign: "DW-3",
     kind: "mining concern",
     position: { x: -4175, y: -2300 },
+    orbit: { around: "brindle", period: 360 },
     color: "#af7a45",
     orientation: 0.82,
     size: "standard",
@@ -135,6 +148,7 @@ export const STATIONS: Station[] = [
     callSign: "BH-08",
     kind: "ice processing & fuel",
     position: { x: 3850, y: -3275 },
+    orbit: { around: "morrow", period: 480 },
     color: "#75a8a7",
     orientation: -0.24,
     size: "standard",
@@ -149,6 +163,7 @@ export const STATIONS: Station[] = [
     callSign: "QA-12",
     kind: "research platform",
     position: { x: 5650, y: -1250 },
+    orbit: { around: "morrow", period: 1100 },
     color: "#88aaa7",
     orientation: 0.12,
     size: "small",

@@ -48,7 +48,15 @@ export type Station = {
   name: string;
   callSign: string;
   kind: string;
+  /**
+   * Position at the start of a shift, and the whole definition of the
+   * station's orbit: its distance from the primary fixes the radius and its
+   * bearing fixes the phase. Use `stationPose` for where a station actually
+   * is; this is only the anchor that orbit is derived from.
+   */
   position: Vec2;
+  /** The body it holds station around, and seconds for one lap. */
+  orbit: { around: string; period: number };
   color: string;
   orientation: number;
   size: "small" | "standard" | "large";

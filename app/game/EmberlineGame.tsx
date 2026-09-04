@@ -16,6 +16,7 @@ import { drawCargoUnit } from "./art/cargo";
 import { ATMOSPHERE_TOP, drawPlanet, planetParallax, PLANET_SCALE, SURFACE_CONTACT } from "./art/planets";
 import { drawShipPortrait, shipArtFor } from "./art/ships";
 import { BERTH_CAPTURE, berthPoint, drawStation, stationColliders } from "./art/stations";
+import { orbitRadius, stationPose } from "./orbits";
 
 const TAU = Math.PI * 2;
 const SAVE_KEY = "emberline-save-v1";
@@ -58,15 +59,16 @@ const GRAVITY_CAP = 16;
  * Where a body's pull stops mattering, in multiples of its radius.
  *
  * Full strength inside GRAVITY_FULL, nothing beyond GRAVITY_REACH, eased
- * between. Without this the ports are unflyable: they are fixed points in a
- * static field with no orbital motion of their own, so a released ship falls
- * out of its own berth and back through the station it just left. Every
- * station sits in the fade, and every hazard — the deck at SURFACE_CONTACT,
- * the atmosphere at ATMOSPHERE_TOP — sits deep inside the full-strength
- * zone, so this buys station-keeping without softening a close pass.
+ * between. The ports hold an authored circle rather than a true orbit (see
+ * `orbits.ts`), so they are not moving fast enough to balance a real pull at
+ * their radius. Reach is set just inside the closest of them, which leaves
+ * every port in quiet space where a ship parked alongside one stays parked.
+ * Every hazard — the deck at SURFACE_CONTACT, the atmosphere at
+ * ATMOSPHERE_TOP — sits deep inside the full-strength zone, so buying that
+ * quiet costs nothing where the danger actually is.
  */
 const GRAVITY_FULL = 2.2;
-const GRAVITY_REACH = 3;
+const GRAVITY_REACH = 2.75;
 
 type CargoItem = {
   id: string;
@@ -84,6 +86,14 @@ type Pickup = CargoItem & {
   spin: number;
   angle: number;
   discovered: boolean;
+  /**
+   * Freight standing on a station's staging area, as an offset from that
+   * station. Ports orbit, so staged units have to ride with the pad instead
+   * of being left behind in space the moment the station moves on. Cleared
+   * the instant a unit is clamped or shaken loose, after which it is an
+   * ordinary object with its own velocity.
+   */
+  anchor?: { station: string; dx: number; dy: number };
 };
 
 type Particle = {
@@ -157,6 +167,8 @@ type UiSnapshot = {
   salvageRecovered: number;
   message: string;
   distance: number;
+  /** Speed relative to the targeted port: what a clean arrival is measured by. */
+  closing: number;
   loadingRemaining: number;
 };
 
@@ -195,25 +207,29 @@ const TITLE_VIEW = {
   narrow: { zoom: 0.5, station: { x: 0.56, y: 0.6 }, ship: { x: 0.5, y: 0.8 }, shipScale: 1.8 },
 };
 
-/** Camera that lands Pilgrim on its mark, plus the world point the truck flies at. */
-function titleLayout(width: number, height: number) {
+/**
+ * Camera that lands Pilgrim on its mark, plus the world point the truck
+ * flies at. Pilgrim is in orbit even on the title screen, so the mark is
+ * taken from where it is now and the whole composition travels with it.
+ */
+function titleLayout(width: number, height: number, at: { x: number; y: number }) {
   const view = width < 760 ? TITLE_VIEW.narrow : TITLE_VIEW.wide;
   const zoom = view.zoom;
   const camera = {
     zoom,
-    x: TITLE_STATION.position.x - (view.station.x * width - width / 2) / zoom,
-    y: TITLE_STATION.position.y - (view.station.y * height - height / 2) / zoom,
+    x: at.x - (view.station.x * width - width / 2) / zoom,
+    y: at.y - (view.station.y * height - height / 2) / zoom,
   };
   const anchor = {
     x: camera.x + (view.ship.x * width - width / 2) / zoom,
     y: camera.y + (view.ship.y * height - height / 2) / zoom,
   };
-  return { camera, anchor, shipScale: view.shipScale };
+  return { camera, anchor, shipScale: view.shipScale, station: at };
 }
 
 /** Bob and sway around the anchor; nose held on Pilgrim. */
-function titleShipPose(anchor: { x: number; y: number }, scale: number, time: number): ShipPose {
-  const heading = Math.atan2(TITLE_STATION.position.y - anchor.y, TITLE_STATION.position.x - anchor.x);
+function titleShipPose(anchor: { x: number; y: number }, scale: number, time: number, station: { x: number; y: number }): ShipPose {
+  const heading = Math.atan2(station.y - anchor.y, station.x - anchor.x);
   return {
     x: anchor.x + Math.sin(time * 0.9) * 3,
     y: anchor.y + Math.cos(time * 0.7) * 2.5,
@@ -269,33 +285,21 @@ function safeLoad(): GameMutable | null {
     if (!stationById(game.dockedId) && game.dockedId) game.dockedId = "pilgrim";
     if (game.dockedId) {
       const station = stationById(game.dockedId) ?? STATIONS[0];
-      const berth = berthPoint(station, 100);
+      const pose = stationPose(station, game.elapsed);
+      const berth = berthPoint(station, 100, pose);
       game.ship.x = berth.x;
       game.ship.y = berth.y;
       game.ship.angle = station.orientation;
-      game.ship.vx = 0;
-      game.ship.vy = 0;
+      game.ship.vx = pose.vx;
+      game.ship.vy = pose.vy;
     }
     const active = contractById(game.activeContractId);
-    if (active) {
+    const origin = stationById(active?.origin ?? null);
+    if (active && origin) {
+      /* Whatever was not clamped before the shift ended is back on its pad,
+         which is where the incomplete-manifest message already sends you. */
       const alreadyLoaded = game.cargo.filter((item) => item.source === "contract").length;
-      const cargo = CARGO[active.cargo];
-      for (let index = alreadyLoaded; index < active.quantity; index += 1) {
-        game.pickups.push({
-          id: `contract-${active.id}-restored-${index}`,
-          kind: active.cargo,
-          condition: 1,
-          source: "contract",
-          value: cargo.value,
-          x: game.ship.x - 58 - (index - alreadyLoaded) * 28,
-          y: game.ship.y + 34 + (index - alreadyLoaded) * 22,
-          vx: game.ship.vx,
-          vy: game.ship.vy,
-          spin: index % 2 ? -0.05 : 0.05,
-          angle: game.ship.angle,
-          discovered: true,
-        });
-      }
+      game.pickups.push(...stagedPickups(active, origin, game.elapsed, alreadyLoaded));
     }
     return game;
   } catch {
@@ -303,8 +307,46 @@ function safeLoad(): GameMutable | null {
   }
 }
 
+/**
+ * The freight a contract stands on its origin pad, from `fromIndex` on.
+ *
+ * Anchored to the station rather than to a point in space: ports orbit, and
+ * a pallet left at a fixed coordinate would be abandoned by its own dock
+ * within a minute. The anchor is a plain offset because a station's bearing
+ * never changes, only where it is.
+ */
+function stagedPickups(contract: ContractDefinition, station: Station, time: number, fromIndex = 0): Pickup[] {
+  const pose = stationPose(station, time);
+  // clear of the lengthened berth: the same 24 units beyond the pad edge the staging always had
+  const staging = berthPoint(station, 182, pose);
+  const cargo = CARGO[contract.cargo];
+  const units: Pickup[] = [];
+  for (let index = fromIndex; index < contract.quantity; index += 1) {
+    const across = 42 + (index - (contract.quantity - 1) / 2) * 52;
+    const x = staging.x - Math.sin(station.orientation) * across;
+    const y = staging.y + Math.cos(station.orientation) * across;
+    units.push({
+      id: `contract-${contract.id}-${index}`,
+      kind: contract.cargo,
+      condition: 1,
+      source: "contract",
+      value: cargo.value,
+      x,
+      y,
+      vx: pose.vx,
+      vy: pose.vy,
+      spin: index % 2 ? -0.05 : 0.05,
+      angle: station.orientation,
+      discovered: true,
+      anchor: { station: station.id, dx: x - pose.x, dy: y - pose.y },
+    });
+  }
+  return units;
+}
+
 function snapshot(game: GameMutable): UiSnapshot {
   const target = stationById(game.targetId);
+  const targetPose = target ? stationPose(target, game.elapsed) : null;
   const active = contractById(game.activeContractId);
   return {
     speed: Math.hypot(game.ship.vx, game.ship.vy),
@@ -324,7 +366,8 @@ function snapshot(game: GameMutable): UiSnapshot {
     completed: game.completed,
     salvageRecovered: game.salvageRecovered,
     message: game.message,
-    distance: target ? distance(game.ship, target.position) : 0,
+    distance: targetPose ? distance(game.ship, targetPose) : 0,
+    closing: targetPose ? Math.hypot(game.ship.vx - targetPose.vx, game.ship.vy - targetPose.vy) : 0,
     loadingRemaining: active ? Math.max(0, active.quantity - game.cargo.filter((item) => item.source === "contract").length) : 0,
   };
 }
@@ -558,26 +601,7 @@ export default function EmberlineGame() {
     game.activeContractId = contract.id;
     game.contractTime = contract.timeLimit ?? 0;
     game.targetId = contract.destination;
-    // clear of the lengthened berth: the same 24 units beyond the pad edge the staging always had
-    const staging = berthPoint(station, 182);
-    game.pickups = Array.from({ length: contract.quantity }, (_, index) => {
-      const spacing = (index - (contract.quantity - 1) / 2) * 52;
-      const across = 42 + spacing;
-      return {
-        id: `contract-${contract.id}-${index}`,
-        kind: contract.cargo,
-        condition: 1,
-        source: "contract" as const,
-        value: cargo.value,
-        x: staging.x - Math.sin(station.orientation) * across,
-        y: staging.y + Math.cos(station.orientation) * across,
-        vx: 0,
-        vy: 0,
-        spin: index % 2 ? -0.05 : 0.05,
-        angle: station.orientation,
-        discovered: true,
-      };
-    });
+    game.pickups = stagedPickups(contract, station, game.elapsed);
     audio.tone("ui", muted);
     notify(`${cargo.name} staged outside. Undock, drift close, then clamp each unit.`);
   }, [audio, muted, notify]);
@@ -587,12 +611,16 @@ export default function EmberlineGame() {
     const station = stationById(game.dockedId);
     if (!station) return;
     game.dockedId = null;
-    const clear = berthPoint(station, 105);
+    const pose = stationPose(station, game.elapsed);
+    const clear = berthPoint(station, 105, pose);
     const heading = station.orientation + Math.PI;
     game.ship.x = clear.x;
     game.ship.y = clear.y;
-    game.ship.vx = Math.cos(heading) * 6;
-    game.ship.vy = Math.sin(heading) * 6;
+    /* You leave carrying the port's motion, the way you would stepping off
+       anything moving. Without it every release would start with a drift
+       back through the station you just left. */
+    game.ship.vx = pose.vx + Math.cos(heading) * 6;
+    game.ship.vy = pose.vy + Math.sin(heading) * 6;
     game.ship.angle = heading;
     game.ship.av = 0;
     audio.tone("dock", muted);
@@ -662,9 +690,10 @@ export default function EmberlineGame() {
     const game = gameRef.current;
     const cost = Math.min(900, Math.max(0, game.credits));
     const station = STATIONS[0];
-    const berth = berthPoint(station, 100);
+    const pose = stationPose(station, game.elapsed);
+    const berth = berthPoint(station, 100, pose);
     game.credits -= cost;
-    game.ship = { x: berth.x, y: berth.y, vx: 0, vy: 0, angle: station.orientation, av: 0, fuel: Math.max(20, shipById(game.shipId).fuelCapacity * 0.18), hull: Math.max(35, game.ship.hull) };
+    game.ship = { x: berth.x, y: berth.y, vx: pose.vx, vy: pose.vy, angle: station.orientation, av: 0, fuel: Math.max(20, shipById(game.shipId).fuelCapacity * 0.18), hull: Math.max(35, game.ship.hull) };
     game.dockedId = station.id;
     game.cargo = game.cargo.filter((item) => item.source === "salvage");
     game.pickups = [];
@@ -751,11 +780,14 @@ export default function EmberlineGame() {
         return;
       }
       const nearbyStation = STATIONS
-        .map((station) => ({ station, dist: distance(game.ship, station.position) }))
+        .map((station) => {
+          const pose = stationPose(station, game.elapsed);
+          return { station, pose, dist: distance(game.ship, pose) };
+        })
         .sort((a, b) => a.dist - b.dist)[0];
-      const speed = Math.hypot(game.ship.vx, game.ship.vy);
       if (nearbyStation && nearbyStation.dist < BERTH_CAPTURE) {
-        if (speed > 36) return notify(`Approach too fast: ${Math.round(speed)} m/s. Hold SHIFT to brake.`);
+        const closing = Math.hypot(game.ship.vx - nearbyStation.pose.vx, game.ship.vy - nearbyStation.pose.vy);
+        if (closing > 36) return notify(`Closing too fast: ${Math.round(closing)} m/s on the pad. Match its motion, then clamp.`);
         dock(game, nearbyStation.station);
         return;
       }
@@ -764,11 +796,12 @@ export default function EmberlineGame() {
 
     const dock = (game: GameMutable, station: Station) => {
       game.dockedId = station.id;
-      const berth = berthPoint(station, 100);
+      const pose = stationPose(station, game.elapsed);
+      const berth = berthPoint(station, 100, pose);
       game.ship.x = berth.x;
       game.ship.y = berth.y;
-      game.ship.vx = 0;
-      game.ship.vy = 0;
+      game.ship.vx = pose.vx;
+      game.ship.vy = pose.vy;
       game.ship.av = 0;
       game.ship.angle = station.orientation;
       game.shake = 4;
@@ -918,11 +951,12 @@ export default function EmberlineGame() {
      * where its painted surface appears rather than at its raw radius.
      */
     const resolveContacts = (game: GameMutable, hullRadius: number) => {
-      const solids: { x: number; y: number; r: number; what: string }[] = [];
+      const solids: { x: number; y: number; r: number; vx: number; vy: number; what: string }[] = [];
       for (const station of STATIONS) {
-        if (distance(game.ship, station.position) > 320) continue;
-        for (const circle of stationColliders(station)) {
-          solids.push({ ...circle, what: `Contact with ${station.name} structure` });
+        const pose = stationPose(station, game.elapsed);
+        if (distance(game.ship, pose) > 320) continue;
+        for (const circle of stationColliders(station, pose)) {
+          solids.push({ ...circle, vx: pose.vx, vy: pose.vy, what: `Contact with ${station.name} structure` });
         }
       }
       for (const body of BODIES) {
@@ -930,6 +964,8 @@ export default function EmberlineGame() {
           x: body.position.x,
           y: body.position.y,
           r: body.radius * SURFACE_CONTACT,
+          vx: 0,
+          vy: 0,
           what: `Surface contact on ${body.name}`,
         });
       }
@@ -944,7 +980,10 @@ export default function EmberlineGame() {
         const ny = dist > 0.001 ? dy / dist : 0;
         game.ship.x = solid.x + nx * reach;
         game.ship.y = solid.y + ny * reach;
-        const into = game.ship.vx * nx + game.ship.vy * ny;
+        /* Closing speed against the obstacle's own motion: riding alongside
+           a port costs nothing, and a port sweeping into a parked ship is
+           still a collision. */
+        const into = (game.ship.vx - solid.vx) * nx + (game.ship.vy - solid.vy) * ny;
         if (into >= 0) continue;
         game.ship.vx -= (1 + RESTITUTION) * into * nx;
         game.ship.vy -= (1 + RESTITUTION) * into * ny;
@@ -1040,8 +1079,17 @@ export default function EmberlineGame() {
 
       if (game.dockedId) {
         audio.setEngine(0, muted);
-        game.ship.vx = 0;
-        game.ship.vy = 0;
+        /* Berthed: the port is in orbit, so the ship rides it rather than
+           hanging at a fixed point while its own dock travels away. */
+        const berthedAt = stationById(game.dockedId);
+        if (berthedAt) {
+          const pose = stationPose(berthedAt, game.elapsed);
+          const berth = berthPoint(berthedAt, 100, pose);
+          game.ship.x = berth.x;
+          game.ship.y = berth.y;
+          game.ship.vx = pose.vx;
+          game.ship.vy = pose.vy;
+        }
         game.ship.av = 0;
         game.shake *= Math.max(0, 1 - dt * 7);
         if (actionRequestRef.current || (keysRef.current[" "] && !actionLatchRef.current)) {
@@ -1144,8 +1192,17 @@ export default function EmberlineGame() {
       resolveContacts(game, HULL_RADIUS[shipDef.size]);
 
       game.pickups.forEach((pickup) => {
-        pickup.x += pickup.vx * dt;
-        pickup.y += pickup.vy * dt;
+        const anchored = pickup.anchor ? stationById(pickup.anchor.station) : null;
+        if (pickup.anchor && anchored) {
+          const pose = stationPose(anchored, game.elapsed);
+          pickup.x = pose.x + pickup.anchor.dx;
+          pickup.y = pose.y + pickup.anchor.dy;
+          pickup.vx = pose.vx;
+          pickup.vy = pose.vy;
+        } else {
+          pickup.x += pickup.vx * dt;
+          pickup.y += pickup.vy * dt;
+        }
         pickup.angle += pickup.spin * dt;
         if (distance(game.ship, pickup) < (game.upgrades.includes("scanner") ? 520 : 215)) pickup.discovered = true;
       });
@@ -1178,8 +1235,9 @@ export default function EmberlineGame() {
         game.cargo = [];
         game.pickups = [];
         game.activeContractId = null;
-        const rescue = berthPoint(STATIONS[0], 100);
-        game.ship = { x: rescue.x, y: rescue.y, vx: 0, vy: 0, angle: STATIONS[0].orientation, av: 0, fuel: 24, hull: 52 };
+        const home = stationPose(STATIONS[0], game.elapsed);
+        const rescue = berthPoint(STATIONS[0], 100, home);
+        game.ship = { x: rescue.x, y: rescue.y, vx: home.vx, vy: home.vy, angle: STATIONS[0].orientation, av: 0, fuel: 24, hull: 52 };
         game.dockedId = "pilgrim";
         salvageSeededRef.current = false;
         saveGame(game);
@@ -1266,14 +1324,15 @@ export default function EmberlineGame() {
       const cam = cameraRef.current;
       const speed = Math.hypot(game.ship.vx, game.ship.vy);
       const target = stationById(game.targetId);
-      const targetDist = target ? distance(game.ship, target.position) : 9999;
+      const targetPose = target ? stationPose(target, game.elapsed) : null;
+      const targetDist = targetPose ? distance(game.ship, targetPose) : 9999;
       const desiredZoom = game.dockedId ? 1.25 : targetDist < 300 ? 1.12 : clamp(0.92 - speed / 700, 0.3, 0.95);
-      const title = screen === "title" ? titleLayout(width, height) : null;
+      const title = screen === "title" ? titleLayout(width, height, stationPose(TITLE_STATION, game.elapsed)) : null;
       if (title) {
         cam.zoom = lerp(cam.zoom, title.camera.zoom, 0.02);
         cam.x = lerp(cam.x, title.camera.x, 0.02);
         cam.y = lerp(cam.y, title.camera.y, 0.02);
-        titlePoseRef.current = titleShipPose(title.anchor, title.shipScale, game.elapsed);
+        titlePoseRef.current = titleShipPose(title.anchor, title.shipScale, game.elapsed, title.station);
       } else {
         cam.zoom = lerp(cam.zoom, desiredZoom, 0.025);
         cam.x = lerp(cam.x, game.ship.x + game.ship.vx * 1.4, 0.055);
@@ -1303,6 +1362,17 @@ export default function EmberlineGame() {
         * top of the atmosphere, then the deck — and the deck brightens as
         * the ship closes on it, so the last ring is the loudest.
         */
+      /* The lanes the ports run on, faint enough to stay background. */
+      context.strokeStyle = "rgba(125,144,137,.055)";
+      context.lineWidth = 1 / cam.zoom;
+      STATIONS.forEach((station) => {
+        const primary = BODIES.find((body) => body.id === station.orbit.around);
+        if (!primary) return;
+        context.beginPath();
+        context.arc(primary.position.x, primary.position.y, orbitRadius(station), 0, TAU);
+        context.stroke();
+      });
+
       BODIES.forEach((body) => {
         const deck = body.radius * SURFACE_CONTACT;
         context.lineWidth = 1 / cam.zoom;
@@ -1351,21 +1421,25 @@ export default function EmberlineGame() {
         context.restore();
       });
 
-      if (target && !game.dockedId) {
+      if (targetPose && !game.dockedId) {
         context.strokeStyle = "rgba(211,165,79,.18)";
         context.lineWidth = 1 / cam.zoom;
         context.setLineDash([9 / cam.zoom, 13 / cam.zoom]);
-        context.beginPath(); context.moveTo(game.ship.x, game.ship.y); context.lineTo(target.position.x, target.position.y); context.stroke();
+        context.beginPath(); context.moveTo(game.ship.x, game.ship.y); context.lineTo(targetPose.x, targetPose.y); context.stroke();
         context.setLineDash([]);
       }
 
-      STATIONS.forEach((station) => drawStation(context, station, {
-        time: game.elapsed,
-        zoom: cam.zoom,
-        target: station.id === game.targetId,
-        shipSpeed: speed,
-        shipDistance: distance(game.ship, station.position),
-      }));
+      STATIONS.forEach((station) => {
+        const pose = stationPose(station, game.elapsed);
+        drawStation(context, station, {
+          time: game.elapsed,
+          zoom: cam.zoom,
+          target: station.id === game.targetId,
+          closingSpeed: Math.hypot(game.ship.vx - pose.vx, game.ship.vy - pose.vy),
+          shipDistance: distance(game.ship, pose),
+          at: pose,
+        });
+      });
       game.pickups.forEach((pickup) => {
         if (!pickup.discovered && pickup.source === "salvage") return;
         context.save();
@@ -1412,15 +1486,16 @@ export default function EmberlineGame() {
         context.font = `${11 / cam.zoom}px ui-monospace, monospace`;
         context.textAlign = "center";
         STATIONS.forEach((station) => {
+          const pose = stationPose(station, game.elapsed);
           context.fillStyle = station.id === game.targetId ? "#f0c46b" : "rgba(226,221,204,.72)";
-          context.fillText(`${station.callSign}  ${station.name.toUpperCase()}`, station.position.x, station.position.y + 76 / cam.zoom);
+          context.fillText(`${station.callSign}  ${station.name.toUpperCase()}`, pose.x, pose.y + 76 / cam.zoom);
         });
       }
       context.restore();
 
-      if (!game.dockedId && target) {
-        const tx = (target.position.x - cam.x) * cam.zoom + width / 2;
-        const ty = (target.position.y - cam.y) * cam.zoom + height / 2;
+      if (!game.dockedId && targetPose) {
+        const tx = (targetPose.x - cam.x) * cam.zoom + width / 2;
+        const ty = (targetPose.y - cam.y) * cam.zoom + height / 2;
         if (tx < 60 || tx > width - 60 || ty < 80 || ty > height - 70) {
           const cx = width / 2;
           const cy = height / 2;
@@ -1544,6 +1619,7 @@ export default function EmberlineGame() {
           <aside className="telemetry-card plate">
             <div className="velocity-readout"><span>SPEED</span><strong>{Math.round(ui.speed)}</strong><small>m/s</small></div>
             <div className="telemetry-row"><span>RANGE TO {target.callSign}</span><b>{Math.round(ui.distance)} km</b></div>
+            <div className="telemetry-row"><span>CLOSING</span><b className={ui.closing > 36 ? "hot" : ""}>{Math.round(ui.closing)} m/s</b></div>
             <div className="bar-row"><span>PROPELLANT</span><div className="meter"><i style={{ width: `${clamp(ui.fuel / fuelCapacity * 100, 0, 100)}%` }} /></div><b>{Math.round(ui.fuel)}</b></div>
             <div className="bar-row"><span>HULL</span><div className="meter hull"><i style={{ width: `${ui.hull}%` }} /></div><b>{Math.round(ui.hull)}%</b></div>
             <div className="telemetry-row"><span>PAYLOAD</span><b>{cargoMass} t / {ui.cargo.length} clamps</b></div>
@@ -1639,7 +1715,7 @@ export default function EmberlineGame() {
       {mapOpen && (
         <section className="modal map-modal plate" role="dialog" aria-modal="true" aria-labelledby="map-title">
           <button className="modal-close" onClick={() => setMapOpen(false)}>Close <kbd>ESC</kbd></button>
-          <div className="map-copy"><p className="eyebrow">COMPRESSED NAVIGATION CHART / NOT TO SCALE</p><h2 id="map-title">The Cinder system</h2><p>Learn the working lines. Mine to refinery, refinery to shipyard, ice moon to habitat. The best route is the one your current ship can fly cleanly.</p></div>
+          <div className="map-copy"><p className="eyebrow">COMPRESSED NAVIGATION CHART / NOT TO SCALE</p><h2 id="map-title">The Cinder system</h2><p>Learn the working lines. Mine to refinery, refinery to shipyard, ice moon to habitat. Every port is drawn at its mean position and every one of them is moving, so the best route is the one your current ship can fly cleanly to where the port will be.</p></div>
           <div className="system-map">
             <div className="orbit orbit-one" /><div className="orbit orbit-two" />
             {BODIES.map((body) => <div className={`map-body ${body.id}`} key={body.id}><PlanetPortrait body={body} /><span>{body.name.toUpperCase()}<small>{body.kind}</small></span></div>)}
@@ -1656,9 +1732,9 @@ export default function EmberlineGame() {
           <div className="guide-heading"><p className="eyebrow">KESTREL U-3 / QUICK REFERENCE</p><h2 id="guide-title">Momentum is the road.</h2><p>Thrust changes velocity. Releasing the controls does not stop the ship. Turn early, brake earlier, and arrive slowly.</p></div>
           <div className="guide-grid">
             <article><span>01</span><h3>Take local work</h3><p>While docked, choose a manifest from the contract board. Repeated routes gradually pay less as local demand is met.</p></article>
-            <article><span>02</span><h3>Secure the load</h3><p>Release the berth, drift within 92 m of each staged unit, match its speed, then press <kbd>SPACE</kbd>. Cargo changes mass and handling.</p></article>
-            <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward. <kbd>A</kbd>/<kbd>D</kbd> rotate. <kbd>Q</kbd>/<kbd>E</kbd> strafe. The teal line is your true velocity. Burn, coast, flip, brake — a loaded round trip costs most of a tank, so the coast is free and the burn is not.</p></article>
-            <article><span>04</span><h3>Make a clean arrival</h3><p>Station structure is solid. Hold <kbd>SHIFT</kbd> for assisted braking, enter the capture envelope below 36 m/s, then press <kbd>SPACE</kbd>. Contact above 18 m/s costs hull; above 55 m/s it tears a container off the spine.</p></article>
+            <article><span>02</span><h3>Secure the load</h3><p>Release the berth, drift within 92 m of each staged unit, match its speed, then press <kbd>SPACE</kbd>. Staged freight rides its pad around with the port. Cargo changes mass and handling.</p></article>
+            <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward. <kbd>A</kbd>/<kbd>D</kbd> rotate. <kbd>Q</kbd>/<kbd>E</kbd> strafe. The teal line is your true velocity. Burn, coast, flip, brake — a loaded round trip costs most of a tank, so the coast is free and the burn is not. Aim where the beacon is going, not where it sits.</p></article>
+            <article><span>04</span><h3>Make a clean arrival</h3><p>Ports orbit, so an arrival is a rendezvous. <b>CLOSING</b> on the panel is your speed relative to the pad, and it has to be under 36 m/s to clamp — matching a port’s motion matters more than stopping. Structure is solid: contact above 18 m/s costs hull, above 55 m/s it tears a container off the spine.</p></article>
             <article><span>05</span><h3>Respect the deck</h3><p>The red ring is a planet’s surface and it is solid. The dashed ring above it is atmosphere: drag and heat, survivable briefly, useful for shedding speed. Loaded, you cannot climb straight out of a deep well.</p></article>
             <article><span>06</span><h3>Work The Wake</h3><p>Unmarked debris lies northeast of Rayleigh. Fit a better scanner, recover useful objects, and deliver salvage to any port.</p></article>
           </div>
