@@ -1,5 +1,9 @@
 # EMBERLINE — deployment options
 
+**Status.** Option 1 is implemented: `.github/workflows/pages.yml`, plus the env-gated export in
+`next.config.ts` and the static `generateMetadata()` in `app/layout.tsx`. Before the first run, set
+repository Settings → Pages → Source to **GitHub Actions**.
+
 ## Recommendation
 
 **Ship to GitHub Pages** via vinext's `output: "export"` + `assetPrefix`; runner-up **Cloudflare Workers**.

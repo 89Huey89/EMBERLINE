@@ -1,0 +1,50 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Build static export
+        env:
+          STATIC_EXPORT: "1"
+          ASSET_PREFIX: /EMBERLINE
+          NEXT_PUBLIC_SITE_URL: https://89huey89.github.io/EMBERLINE/
+        run: npm run build
+      - name: Flatten assetPrefix dir into the Pages root
+        run: |
+          mv dist/client/EMBERLINE/_next dist/client/_next
+          rmdir dist/client/EMBERLINE
+          touch dist/client/.nojekyll   # belt-and-braces: _next starts with an underscore
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/client
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: "${{ steps.deployment.outputs.page_url }}"
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
