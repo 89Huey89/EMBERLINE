@@ -17,6 +17,9 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
+  // Let the cockpit run under the notch and the home indicator; the dash and console pad themselves with the safe-area insets.
+  viewportFit: "cover",
+  themeColor: "#0a0d0e",
 };
 
 export function generateMetadata(): Metadata {
