@@ -13,6 +13,7 @@ import {
 } from "./data";
 import type { CargoKind, ContractDefinition, ShipDefinition, Station } from "./types";
 import { drawCargoUnit } from "./art/cargo";
+import { drawPlanet, planetParallax } from "./art/planets";
 import { drawShipPortrait, shipArtFor } from "./art/ships";
 import { berthPoint, drawStation } from "./art/stations";
 
@@ -852,25 +853,6 @@ export default function EmberlineGame() {
         const grav = Math.min(34, body.gravity / Math.max(42000, distSq));
         game.ship.vx += (dx / Math.max(1, dist)) * grav * dt;
         game.ship.vy += (dy / Math.max(1, dist)) * grav * dt;
-        if (dist < body.radius + 18) {
-          const nx = -dx / Math.max(1, dist);
-          const ny = -dy / Math.max(1, dist);
-          game.ship.x = body.position.x + nx * (body.radius + 19);
-          game.ship.y = body.position.y + ny * (body.radius + 19);
-          const inward = game.ship.vx * -nx + game.ship.vy * -ny;
-          const impact = Math.hypot(game.ship.vx, game.ship.vy);
-          if (inward > 0) {
-            game.ship.vx += nx * inward * 1.25;
-            game.ship.vy += ny * inward * 1.25;
-          }
-          if (impact > 18) {
-            game.ship.hull = Math.max(0, game.ship.hull - (impact - 18) * 0.32);
-            game.cargo.forEach((item) => { item.condition = Math.max(0.28, item.condition - impact * 0.0025); });
-            game.shake = Math.min(16, impact * 0.12);
-            audio.tone("impact", muted);
-            notify(`Hull contact at ${Math.round(impact)} m/s. Cargo restraints report the shock.`);
-          }
-        }
       }
 
       const accelerationLoad = appliedForce / Math.max(1, totalMass);
@@ -995,59 +977,6 @@ export default function EmberlineGame() {
       ctx.restore();
     };
 
-    const drawBody = (ctx: CanvasRenderingContext2D, body: (typeof BODIES)[number], camera: typeof cameraRef.current) => {
-      const radius = body.radius;
-      ctx.save();
-      ctx.translate(body.position.x, body.position.y);
-      if (body.atmosphere) {
-        const atmosphere = ctx.createRadialGradient(0, 0, radius * 0.76, 0, 0, radius * 1.12);
-        atmosphere.addColorStop(0, "rgba(0,0,0,0)");
-        atmosphere.addColorStop(0.86, `${body.atmosphere}55`);
-        atmosphere.addColorStop(1, `${body.atmosphere}00`);
-        ctx.fillStyle = atmosphere;
-        ctx.beginPath(); ctx.arc(0, 0, radius * 1.13, 0, TAU); ctx.fill();
-      }
-      const globe = ctx.createRadialGradient(-radius * 0.38, -radius * 0.48, radius * 0.1, 0, 0, radius * 1.15);
-      globe.addColorStop(0, body.id === "cinder" ? "#dc9560" : body.id === "morrow" ? "#a9c1bd" : "#96806a");
-      globe.addColorStop(0.48, body.color);
-      globe.addColorStop(0.8, "#34261f");
-      globe.addColorStop(1, "#090b0b");
-      ctx.fillStyle = globe;
-      ctx.beginPath(); ctx.arc(0, 0, radius, 0, TAU); ctx.fill();
-      ctx.save();
-      ctx.beginPath(); ctx.arc(0, 0, radius - 1, 0, TAU); ctx.clip();
-      ctx.globalAlpha = 0.18;
-      for (let i = 0; i < 13; i += 1) {
-        ctx.strokeStyle = i % 2 ? "#f4c486" : "#3d4e4e";
-        ctx.lineWidth = 7 + (i % 4) * 5;
-        ctx.beginPath();
-        ctx.ellipse(-radius * 0.1, -radius * 0.7 + i * radius * 0.12, radius * (0.78 + (i % 3) * 0.08), radius * 0.07, -0.18, 0, TAU);
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 0.5;
-      const night = ctx.createLinearGradient(-radius, 0, radius, 0);
-      night.addColorStop(0, "rgba(3,6,7,.92)");
-      night.addColorStop(0.52, "rgba(3,6,7,.34)");
-      night.addColorStop(0.7, "rgba(3,6,7,0)");
-      ctx.fillStyle = night;
-      ctx.fillRect(-radius, -radius, radius * 2, radius * 2);
-      if (body.id === "cinder") {
-        ctx.fillStyle = "#dda34d";
-        for (let i = 0; i < 54; i += 1) {
-          const angle = i * 2.37;
-          const r = radius * (0.25 + ((i * 31) % 60) / 100);
-          const x = Math.cos(angle) * r - radius * 0.28;
-          const y = Math.sin(angle) * r;
-          if (x < radius * 0.12) ctx.fillRect(x, y, 1.6, 1.1);
-        }
-      }
-      ctx.restore();
-      ctx.strokeStyle = body.atmosphere ?? "#8c7961";
-      ctx.lineWidth = 3 / Math.max(0.3, camera.zoom);
-      ctx.beginPath(); ctx.arc(0, 0, radius, 0, TAU); ctx.stroke();
-      ctx.restore();
-    };
-
     const draw = (game: GameMutable, dims: { width: number; height: number; dpr: number }) => {
       const { width, height, dpr } = dims;
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1117,7 +1046,14 @@ export default function EmberlineGame() {
       }
       context.restore();
 
-      BODIES.forEach((body) => drawBody(context, body, cam));
+      /* Planets sit behind the traffic and drift with parallax, not with the world. */
+      BODIES.forEach((body) => {
+        const at = planetParallax(body, cam);
+        context.save();
+        context.translate(at.x, at.y);
+        drawPlanet(context, body, { time: game.elapsed, zoom: cam.zoom });
+        context.restore();
+      });
 
       if (target && !game.dockedId) {
         context.strokeStyle = "rgba(211,165,79,.18)";
@@ -1395,9 +1331,7 @@ export default function EmberlineGame() {
           <div className="map-copy"><p className="eyebrow">COMPRESSED NAVIGATION CHART / NOT TO SCALE</p><h2 id="map-title">The Cinder system</h2><p>Learn the working lines. Mine to refinery, refinery to shipyard, ice moon to habitat. The best route is the one your current ship can fly cleanly.</p></div>
           <div className="system-map">
             <div className="orbit orbit-one" /><div className="orbit orbit-two" />
-            <div className="map-body cinder"><i /><span>CINDER</span></div>
-            <div className="map-body morrow"><i /><span>MORROW</span></div>
-            <div className="map-body brindle"><i /><span>BRINDLE</span></div>
+            {BODIES.map((body) => <div className={`map-body ${body.id}`} key={body.id}><i /><span>{body.name.toUpperCase()}</span></div>)}
             <div className="wake-zone"><i />THE WAKE</div>
             {STATIONS.map((station) => <button key={station.id} className={`map-station station-${station.id} ${station.id === ui.targetId ? "active" : ""}`} onClick={() => setTarget(station.id)}><i /><b>{station.callSign}</b><span>{station.name}</span></button>)}
           </div>
@@ -1415,7 +1349,7 @@ export default function EmberlineGame() {
             <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward. <kbd>A</kbd>/<kbd>D</kbd> rotate. <kbd>Q</kbd>/<kbd>E</kbd> strafe. The teal line is your true velocity.</p></article>
             <article><span>04</span><h3>Make a clean arrival</h3><p>Hold <kbd>SHIFT</kbd> for assisted braking. Enter a station’s capture envelope below 36 m/s, then press <kbd>SPACE</kbd>.</p></article>
             <article><span>05</span><h3>Read gravity</h3><p>Curved guide rings mark strong gravity wells. Close planetary passes bend your route and can save propellant.</p></article>
-            <article><span>06</span><h3>Work The Wake</h3><p>Unmarked debris lies northeast of Cinder. Fit a better scanner, recover useful objects, and deliver salvage to any port.</p></article>
+            <article><span>06</span><h3>Work The Wake</h3><p>Unmarked debris lies northeast of Rayleigh. Fit a better scanner, recover useful objects, and deliver salvage to any port.</p></article>
           </div>
           <button className="primary-button" onClick={() => setHelpOpen(false)}>Return to the flight deck <span>→</span></button>
         </section>
