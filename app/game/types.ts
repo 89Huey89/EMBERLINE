@@ -146,7 +146,7 @@ export type ContractDefinition = {
 };
 
 export type UpgradeDefinition = {
-  id: "engine" | "rcs" | "tank" | "clamps" | "scanner" | "cryo";
+  id: "engine" | "rcs" | "tank" | "clamps" | "scanner" | "cryo" | "retro";
   name: string;
   cost: number;
   description: string;

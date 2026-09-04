@@ -53,6 +53,7 @@ export const SHIPS: ShipDefinition[] = [
 export const UPGRADES: UpgradeDefinition[] = [
   { id: "engine", name: "Copperbell main drive", cost: 4200, description: "A larger expansion bell. +16% main thrust." },
   { id: "rcs", name: "Quad RCS pods", cost: 3100, description: "Visible maneuvering clusters. +22% turning authority." },
+  { id: "retro", name: "Retro thruster pair", cost: 3600, description: "Port and starboard burn pods. Enables reverse, strafe, and assisted braking without swinging the nose around." },
   { id: "tank", name: "Long-range tank", cost: 3800, description: "An external propellant drum. +35% capacity." },
   { id: "clamps", name: "Loadmaster clamps", cost: 5200, description: "Reinforced cargo arms. +1 external slot." },
   { id: "scanner", name: "Wake scanner", cost: 4600, description: "Reveals distant salvage and its value." },

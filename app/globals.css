@@ -137,8 +137,11 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
 .telemetry-card::before { background: var(--castings), linear-gradient(var(--teal), var(--teal)) 0 0 / 100% 3px no-repeat; }
 .panel-kicker { display: flex; justify-content: space-between; align-items: center; padding-bottom: 10px; border-bottom: 1px dashed var(--line-strong); color: var(--amber); font: var(--stencil); font-size: 9px; letter-spacing: .18em; }
 .panel-kicker .stamp { transform: none; padding: 2px 5px 1px; font-size: 8px; }
+.panel-kicker-tools { display: flex; align-items: center; gap: 6px; }
+.mission-toggle { display: none; flex: 0 0 auto; padding: 2px 7px; border: 1px solid var(--line-strong); background: transparent; color: var(--amber); font-size: 11px; line-height: 1.4; cursor: pointer; }
+.mission-summary { display: none; width: 100%; padding: 0; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .mission-card h2 { margin: 15px 0 5px; font-size: 18px; font-weight: 520; letter-spacing: -.01em; }
-.mission-card > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.mission-card .mission-detail > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
 .manifest-line { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
 .manifest-line .cargo-portrait { flex: 0 0 auto; width: 84px; height: 44px; }
 .manifest-line div { color: var(--bone-dim); font-family: var(--font-mono-ui), monospace; font-size: 10px; line-height: 1.5; }
@@ -196,6 +199,8 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
 .flight-controls kbd { min-width: 20px; padding: 3px 5px; border: 1px solid #0b0a07; border-radius: 2px; background: linear-gradient(180deg, #f1eadb, #cfc7b4); color: #17140d; text-align: center; font-size: 9px; box-shadow: 0 2px 0 #6f6858, inset 0 1px 0 #fff; }
 .flight-controls .emphasis kbd { background: linear-gradient(180deg, #f2c66c, #c4913a); box-shadow: 0 2px 0 #6b4a17, inset 0 1px 0 rgba(255,255,255,.5); }
 .flight-controls .emphasis span { color: var(--amber); }
+.flight-controls > div.locked { opacity: .4; }
+.flight-controls > div.locked kbd { filter: grayscale(1); }
 
 /* teletype strip */
 .radio-toast { position: absolute; z-index: 7; left: 50%; bottom: 88px; width: min(480px, calc(100vw - 40px)); padding: 10px 16px 11px 18px; transform: translateX(-50%); border: 1px solid var(--plate-edge); border-left: 0; background: var(--plate-2); box-shadow: 0 2px 0 #000, 0 12px 35px rgba(0,0,0,.35); animation: radio-in .3s ease-out; }
@@ -344,23 +349,36 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
   .utility-nav button { width: 54px; min-width: 54px; overflow: hidden; color: transparent; }
   .utility-nav button:nth-child(4) { display: none; }
   .utility-nav kbd { color: var(--amber); }
-  .mission-card { top: 64px; left: 10px; width: min(236px, calc(100vw - 100px)); padding: 12px; }
+  .mission-card { top: 64px; left: 10px; width: min(236px, calc(100vw - 116px)); padding: 12px; }
   .mission-card h2 { margin-top: 11px; font-size: 14px; }
-  .mission-card > p { font-size: 9px; }
+  .mission-card .mission-detail > p { font-size: 9px; }
   .manifest-line .cargo-portrait { width: 64px; height: 34px; }
   .route-line { margin: 11px 0; }
   .objective { padding: 7px 9px; }
-  .telemetry-card { top: 64px; right: 10px; width: 76px; padding: 10px 8px; }
+  .mission-toggle { display: inline-flex; align-items: center; justify-content: center; }
+  .mission-card.collapsed { padding-bottom: 10px; }
+  .mission-card.collapsed .mission-detail { display: none; }
+  .mission-card:not(.collapsed) .mission-summary { display: none; }
+  .mission-card.collapsed .mission-summary { display: flex; flex-direction: column; gap: 3px; padding-top: 9px; }
+  .mission-summary b { font-size: 12px; color: var(--bone); font-weight: 600; }
+  .mission-summary span { font-size: 9px; color: var(--muted); font-family: var(--font-mono-ui), monospace; }
+  .telemetry-card { top: 64px; right: 10px; width: 92px; padding: 10px 9px; }
   .velocity-readout { display: block; text-align: right; border-bottom: 0; padding-bottom: 0; }
   .velocity-readout span { display: block; font-size: 6px; }
   .velocity-readout strong { font-size: 21px; }
-  .telemetry-card .telemetry-row, .telemetry-card .bar-row, .assist-toggle, .tow-button { display: none; }
+  .telemetry-card .telemetry-row, .assist-toggle { display: none; }
+  /* Fuel and hull stay visible on mobile — running dry or taking hull damage needs to be seen at a glance. */
+  .telemetry-card .bar-row { display: block; margin-top: 8px; }
+  .telemetry-card .bar-row span { display: block; margin-bottom: 3px; font-size: 6px; }
+  .telemetry-card .bar-row b { display: block; margin-top: 3px; text-align: right; font-size: 10px; }
+  .telemetry-card .tow-button { margin-top: 9px; min-height: 0; padding: 6px; font-size: 7px; line-height: 1.35; text-align: center; }
   .flight-controls { display: none; }
   .touch-controls { position: absolute; z-index: 8; right: 12px; bottom: 18px; left: 12px; display: flex; justify-content: space-between; align-items: flex-end; pointer-events: none; }
   .touch-controls button { width: 62px; height: 50px; border: 1px solid #0b0a07; background: linear-gradient(180deg, #f1eadb, #cfc7b4); color: #17140d; pointer-events: auto; font: var(--stencil); font-size: 9px; letter-spacing: .08em; touch-action: none; box-shadow: 0 3px 0 #6f6858, inset 0 1px 0 #fff; }
   .touch-controls button:active { transform: translateY(2px); box-shadow: 0 1px 0 #6f6858, inset 0 1px 0 #fff; }
-  .touch-controls > div { display: flex; gap: 6px; }
-  .touch-controls > div button { width: 48px; font-size: 17px; }
+  .touch-cluster { display: flex; flex-direction: column; gap: 6px; }
+  .touch-row { display: flex; gap: 6px; }
+  .touch-row button { width: 48px; font-size: 17px; }
   .touch-controls .touch-thrust { height: 70px; background: linear-gradient(180deg, #f2c66c, #c4913a); box-shadow: 0 3px 0 #6b4a17, inset 0 1px 0 rgba(255,255,255,.5); }
   .radio-toast { bottom: 100px; }
   .save-indicator { display: none; }
