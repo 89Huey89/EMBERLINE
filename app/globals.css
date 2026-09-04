@@ -186,6 +186,8 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
 .flight-controls kbd { min-width: 20px; padding: 3px 5px; border: 1px solid #0b0a07; border-radius: 2px; background: linear-gradient(180deg, #f1eadb, #cfc7b4); color: #17140d; text-align: center; font-size: 9px; box-shadow: 0 2px 0 #6f6858, inset 0 1px 0 #fff; }
 .flight-controls .emphasis kbd { background: linear-gradient(180deg, #f2c66c, #c4913a); box-shadow: 0 2px 0 #6b4a17, inset 0 1px 0 rgba(255,255,255,.5); }
 .flight-controls .emphasis span { color: var(--amber); }
+.flight-controls > div.locked { opacity: .4; }
+.flight-controls > div.locked kbd { filter: grayscale(1); }
 
 /* teletype strip */
 .radio-toast { position: absolute; z-index: 7; left: 50%; bottom: 88px; width: min(480px, calc(100vw - 40px)); padding: 10px 16px 11px 18px; transform: translateX(-50%); border: 1px solid var(--plate-edge); border-left: 0; background: var(--plate-2); box-shadow: 0 2px 0 #000, 0 12px 35px rgba(0,0,0,.35); animation: radio-in .3s ease-out; }

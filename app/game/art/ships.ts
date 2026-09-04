@@ -27,6 +27,8 @@ export type ShipArt = {
   exhaust: number;
   /** Whether cargo is painted before ("under") or after ("over") the hull. */
   cargoLayer: "under" | "over";
+  /** Ship-local mount points for the retro-thruster upgrade: port (-y) then starboard (+y). */
+  retroPorts: [Vec2, Vec2];
   drawHull: (ctx: CanvasRenderingContext2D, state: ShipArtState) => void;
   /** Painted after cargo, once per clamp. Used for cradles and tie-down straps. */
   drawClamp?: (ctx: CanvasRenderingContext2D, slot: number, occupied: boolean) => void;
@@ -94,6 +96,12 @@ const KESTREL_CLAMPS: Vec2[] = [
   { x: -5, y: -13.6 },
   { x: -5, y: 13.6 },
   { x: -28, y: -13.6 }, // Loadmaster clamps upgrade
+];
+
+/** Retro-thruster mount points: clear spine between the two cradles, outside the rails. */
+const KESTREL_RETRO_PORTS: [Vec2, Vec2] = [
+  { x: -14, y: -10.5 },
+  { x: -14, y: 10.5 },
 ];
 
 function drawKestrelHull(ctx: CanvasRenderingContext2D, state: ShipArtState) {
@@ -306,6 +314,10 @@ function drawKestrelHull(ctx: CanvasRenderingContext2D, state: ShipArtState) {
       ctx.fillRect(x, y, 3.5, 0.9);
     }
   }
+  // retro thruster pods on the spine, nozzles opening toward the nose
+  if (upgrades.includes("retro")) {
+    KESTREL_RETRO_PORTS.forEach((port) => drawKestrelRetroPod(ctx, port));
+  }
   // registry on the roof
   if (showLabel) {
     ctx.fillStyle = PAINT.oxideDeep;
@@ -314,6 +326,28 @@ function drawKestrelHull(ctx: CanvasRenderingContext2D, state: ShipArtState) {
     ctx.textBaseline = "middle";
     ctx.fillText("U-3", 17.2, 0.4);
   }
+}
+
+/** One retro-thruster pod, drawn nose-forward; mirrored onto the port side via a y-flip. */
+function drawKestrelRetroPod(ctx: CanvasRenderingContext2D, at: Vec2) {
+  const side = Math.sign(at.y) || 1;
+  const y = Math.abs(at.y);
+  ctx.save();
+  ctx.translate(at.x, 0);
+  ctx.scale(1, side);
+  rounded(ctx, -3.6, y - 2, 7.2, 4, 1.1);
+  outlined(ctx, PAINT.steelLight, 1.1);
+  ctx.strokeStyle = PAINT.steelDeep;
+  ctx.lineWidth = 0.8;
+  ctx.beginPath(); ctx.moveTo(-3.2, y); ctx.lineTo(3.2, y); ctx.stroke();
+  // nozzle cone opening toward the nose (+x): this is what fires when braking or reversing
+  ctx.fillStyle = PAINT.steelDeep;
+  ctx.beginPath();
+  ctx.moveTo(3.6, y - 1.6); ctx.lineTo(7.2, y); ctx.lineTo(3.6, y + 1.6);
+  ctx.closePath();
+  ctx.fill();
+  light(ctx, -2.4, y, PAINT.teal, 0.75);
+  ctx.restore();
 }
 
 function drawKestrelClamp(ctx: CanvasRenderingContext2D, slot: number, occupied: boolean) {
@@ -371,6 +405,12 @@ function drawKestrelClamp(ctx: CanvasRenderingContext2D, slot: number, occupied:
 /* Legacy generic hull — still used by the Mule, Atlas and Mastiff      */
 /* until each gets its own drawing in a later art pass.                 */
 /* ------------------------------------------------------------------ */
+/** Retro-thruster mount points shared by every legacy hull: a clear gap between the two RCS shoulders. */
+const LEGACY_RETRO_PORTS: [Vec2, Vec2] = [
+  { x: 1.5, y: -12 },
+  { x: 1.5, y: 12 },
+];
+
 function legacyClamps(ship: ShipDefinition, count: number): Vec2[] {
   return Array.from({ length: count }, (_, index) => {
     const row = index % 2 === 0 ? -1 : 1;
@@ -450,6 +490,15 @@ function legacyHull(ship: ShipDefinition) {
       ctx.fillRect(11, -12, 5, 4);
       ctx.fillRect(11, 8, 5, 4);
     }
+    if (upgrades.includes("retro")) {
+      ctx.fillStyle = "#9aa39e";
+      ctx.fillRect(-1, -14, 5, 4);
+      ctx.fillRect(-1, 10, 5, 4);
+      // nozzle cones opening toward the nose: this is what fires when braking or reversing
+      ctx.fillStyle = "#23241f";
+      ctx.beginPath(); ctx.moveTo(4, -13); ctx.lineTo(7.4, -12); ctx.lineTo(4, -11); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(4, 13); ctx.lineTo(7.4, 12); ctx.lineTo(4, 11); ctx.closePath(); ctx.fill();
+    }
     if (upgrades.includes("scanner")) {
       ctx.strokeStyle = "#c8b66b";
       ctx.lineWidth = 1;
@@ -498,6 +547,7 @@ export function shipArtFor(ship: ShipDefinition): ShipArt {
       cargoScale: 0.66,
       exhaust: -57,
       cargoLayer: "over",
+      retroPorts: KESTREL_RETRO_PORTS,
       drawHull: drawKestrelHull,
       drawClamp: drawKestrelClamp,
     };
@@ -509,6 +559,7 @@ export function shipArtFor(ship: ShipDefinition): ShipArt {
     cargoScale: ship.id === "hauler" ? 0.92 : 0.72,
     exhaust: -27,
     cargoLayer: "under",
+    retroPorts: LEGACY_RETRO_PORTS,
     drawHull: legacyHull(ship),
     drawClamp: (ctx, slot, occupied) => {
       if (occupied) legacyClampStrut(ctx, clamps, slot);
