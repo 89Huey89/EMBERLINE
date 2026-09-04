@@ -13,12 +13,60 @@ import {
 } from "./data";
 import type { CargoKind, CelestialBody, ContractDefinition, ShipDefinition, Station } from "./types";
 import { drawCargoUnit } from "./art/cargo";
-import { drawPlanet, planetParallax, PLANET_SCALE } from "./art/planets";
+import { ATMOSPHERE_TOP, drawPlanet, planetParallax, PLANET_SCALE, SURFACE_CONTACT } from "./art/planets";
 import { drawShipPortrait, shipArtFor } from "./art/ships";
-import { berthPoint, drawStation } from "./art/stations";
+import { BERTH_CAPTURE, berthPoint, drawStation, stationColliders } from "./art/stations";
 
 const TAU = Math.PI * 2;
 const SAVE_KEY = "emberline-save-v1";
+
+/* ------------------------------------------------------------------ */
+/* Contact and damage                                                   */
+/*                                                                      */
+/* Station structure and planet surfaces are solid, and every contact is */
+/* charged to the hull at a rate set by the closing speed alone. The     */
+/* numbers below are the whole difficulty curve: a nudge under the scuff */
+/* speed is free, a bad arrival is expensive, and a hard enough hit both */
+/* tears freight off the spine and can end the shift.                    */
+/* ------------------------------------------------------------------ */
+
+/** Contact below this closing speed only scuffs paint. */
+const SCUFF_SPEED = 18;
+/** Hull points lost per m/s of closing speed above the scuff threshold. */
+const DAMAGE_PER_SPEED = 1;
+/** At or above this, the shock tears a container off its clamps. */
+const SHED_SPEED = 55;
+/** Fraction of the normal velocity a contact returns; the rest is damage. */
+const RESTITUTION = 0.32;
+/** Contact radius of the flown ship, by class. Matches the drawn silhouette. */
+const HULL_RADIUS = { small: 22, standard: 30, large: 38 } as const;
+/** Seconds between repeats of a standing warning, so it does not flood the net. */
+const WARNING_INTERVAL = 2.2;
+/** Seconds between minor impact reports. A serious hit ignores this entirely. */
+const IMPACT_INTERVAL = 1;
+/** Hull points that make an impact worth interrupting anything else to say. */
+const URGENT_DAMAGE = 10;
+/**
+ * Ceiling on gravitational acceleration, m/s².
+ *
+ * Ships accelerate at 13-19 m/s² empty, so a capped well can be climbed out
+ * of light and cannot be climbed straight out of loaded. That is the point:
+ * a close pass with freight aboard has to be flown around, not through.
+ */
+const GRAVITY_CAP = 16;
+/**
+ * Where a body's pull stops mattering, in multiples of its radius.
+ *
+ * Full strength inside GRAVITY_FULL, nothing beyond GRAVITY_REACH, eased
+ * between. Without this the ports are unflyable: they are fixed points in a
+ * static field with no orbital motion of their own, so a released ship falls
+ * out of its own berth and back through the station it just left. Every
+ * station sits in the fade, and every hazard — the deck at SURFACE_CONTACT,
+ * the atmosphere at ATMOSPHERE_TOP — sits deep inside the full-strength
+ * zone, so this buys station-keeping without softening a close pass.
+ */
+const GRAVITY_FULL = 2.2;
+const GRAVITY_REACH = 3;
 
 type CargoItem = {
   id: string;
@@ -216,7 +264,7 @@ function safeLoad(): GameMutable | null {
     if (!raw) return null;
     const saved = JSON.parse(raw) as Partial<GameMutable>;
     const base = freshGame();
-    const game = { ...base, ...saved, ship: { ...base.ship, ...saved.ship }, particles: [], pickups: [] };
+    const game = { ...base, ...saved, ship: { ...base.ship, ...saved.ship }, particles: [] as Particle[], pickups: [] as Pickup[] };
     if (!SHIPS.some((ship) => ship.id === game.shipId)) return null;
     if (!stationById(game.dockedId) && game.dockedId) game.dockedId = "pilgrim";
     if (game.dockedId) {
@@ -290,7 +338,7 @@ function makeSalvage(): Pickup[] {
   const kinds: CargoKind[] = ["components", "electronics", "ore", "science", "machinery", "metals"];
   return kinds.map((kind, index) => {
     const angle = index * 2.17 + 0.4;
-    const radius = 80 + (index * 61) % 260;
+    const radius = 140 + (index * 97) % 430;
     return {
       id: `salvage-${index}`,
       kind,
@@ -448,6 +496,10 @@ export default function EmberlineGame() {
   const actionLatchRef = useRef(false);
   const actionRequestRef = useRef(false);
   const salvageSeededRef = useRef(false);
+  const lastWarningRef = useRef(0);
+  const lastImpactRef = useRef(0);
+  /** What last took hull off the ship, so a loss can say what caused it. */
+  const lastHarmRef = useRef("a hard contact");
   const cameraRef = useRef({ x: -320, y: 30, zoom: 0.78 });
   const titlePoseRef = useRef<ShipPose | null>(null);
   const starRef = useRef(Array.from({ length: 340 }, (_, index) => ({
@@ -702,7 +754,7 @@ export default function EmberlineGame() {
         .map((station) => ({ station, dist: distance(game.ship, station.position) }))
         .sort((a, b) => a.dist - b.dist)[0];
       const speed = Math.hypot(game.ship.vx, game.ship.vy);
-      if (nearbyStation && nearbyStation.dist < 105) {
+      if (nearbyStation && nearbyStation.dist < BERTH_CAPTURE) {
         if (speed > 36) return notify(`Approach too fast: ${Math.round(speed)} m/s. Hold SHIFT to brake.`);
         dock(game, nearbyStation.station);
         return;
@@ -768,6 +820,182 @@ export default function EmberlineGame() {
       setSavePulse(true);
       window.setTimeout(() => setSavePulse(false), 900);
       notify(note, 6);
+    };
+
+    /** A standing warning that repeats no more often than WARNING_INTERVAL. */
+    const nag = (game: GameMutable, message: string, duration = 4) => {
+      if (game.elapsed - lastWarningRef.current < WARNING_INTERVAL) return;
+      lastWarningRef.current = game.elapsed;
+      notify(message, duration);
+    };
+
+    /**
+     * Impact chatter, on its own timer.
+     *
+     * A serious hit always speaks. Striking something is the most important
+     * thing the net has to say, and it must not be swallowed by a scrape
+     * along the same surface or by the atmosphere warning that usually
+     * comes just before it.
+     */
+    const report = (game: GameMutable, message: string, duration: number, urgent: boolean) => {
+      if (!urgent && game.elapsed - lastImpactRef.current < IMPACT_INTERVAL) return;
+      lastImpactRef.current = game.elapsed;
+      notify(message, duration);
+    };
+
+    /** Sparks and torn insulation, thrown back out along the contact normal. */
+    const impactSpray = (game: GameMutable, nx: number, ny: number, strength: number) => {
+      const count = Math.min(18, 3 + Math.round(strength * 0.25));
+      for (let index = 0; index < count; index += 1) {
+        const spread = (Math.random() - 0.5) * 1.9;
+        const speed = 40 + Math.random() * strength * 1.6;
+        game.particles.push({
+          x: game.ship.x + nx * 8,
+          y: game.ship.y + ny * 8,
+          vx: (nx * Math.cos(spread) - ny * Math.sin(spread)) * speed,
+          vy: (nx * Math.sin(spread) + ny * Math.cos(spread)) * speed,
+          life: 0.45,
+          maxLife: 0.45,
+          size: 1 + Math.random() * 2,
+          color: Math.random() > 0.5 ? "#f6d27b" : "#e0653a",
+        });
+      }
+    };
+
+    /**
+     * Charge one contact to the ship.
+     *
+     * Everything scales off the closing speed. Under the scuff threshold a
+     * contact costs nothing but a bump; above it the hull pays a point per
+     * m/s, the freight takes the same shock, and a hard enough hit tears the
+     * outermost container off its clamps and leaves it tumbling clear, where
+     * it can be chased down and re-clamped like any other loose cargo.
+     */
+    const applyImpact = (game: GameMutable, closing: number, nx: number, ny: number, what: string) => {
+      const damage = Math.max(0, closing - SCUFF_SPEED) * DAMAGE_PER_SPEED;
+      game.shake = Math.max(game.shake, Math.min(24, 3 + damage * 0.4));
+      if (damage <= 0) {
+        audio.tone("clamp", muted);
+        return;
+      }
+      impactSpray(game, nx, ny, damage);
+      audio.tone("impact", muted);
+      lastHarmRef.current = what.charAt(0).toLowerCase() + what.slice(1);
+      game.ship.hull = Math.max(0, game.ship.hull - damage);
+      game.cargo.forEach((item) => {
+        item.condition = Math.max(0.15, item.condition - damage * 0.006);
+      });
+
+      if (closing >= SHED_SPEED && game.cargo.length) {
+        const lost = game.cargo[game.cargo.length - 1];
+        game.cargo = game.cargo.slice(0, -1);
+        const tumble = 70 + Math.random() * 60;
+        game.pickups.push({
+          ...lost,
+          condition: Math.max(0.2, lost.condition - 0.2),
+          x: game.ship.x + nx * 46,
+          y: game.ship.y + ny * 46,
+          vx: game.ship.vx + nx * tumble,
+          vy: game.ship.vy + ny * tumble,
+          spin: (Math.random() - 0.5) * 1.4,
+          angle: game.ship.angle,
+          discovered: true,
+        });
+        report(game, `${what}. ${CARGO[lost.kind].name} torn off the spine and tumbling clear.`, 7, true);
+        return;
+      }
+      report(game, `${what} at ${Math.round(closing)} m/s. Hull at ${Math.round(game.ship.hull)}%.`, 5, damage >= URGENT_DAMAGE);
+    };
+
+    /**
+     * Push the ship out of anything solid it has entered, and charge it.
+     *
+     * The ship is a disc and every obstacle is a disc, so the resolution is
+     * the ordinary one: lift the ship back to the surface, reflect the part
+     * of its velocity that pointed into the obstacle, and leave the part
+     * that did not, so a glancing pass scrapes along instead of stopping
+     * dead. Station colliders come from the art, and a planet's deck is set
+     * where its painted surface appears rather than at its raw radius.
+     */
+    const resolveContacts = (game: GameMutable, hullRadius: number) => {
+      const solids: { x: number; y: number; r: number; what: string }[] = [];
+      for (const station of STATIONS) {
+        if (distance(game.ship, station.position) > 320) continue;
+        for (const circle of stationColliders(station)) {
+          solids.push({ ...circle, what: `Contact with ${station.name} structure` });
+        }
+      }
+      for (const body of BODIES) {
+        solids.push({
+          x: body.position.x,
+          y: body.position.y,
+          r: body.radius * SURFACE_CONTACT,
+          what: `Surface contact on ${body.name}`,
+        });
+      }
+
+      for (const solid of solids) {
+        const dx = game.ship.x - solid.x;
+        const dy = game.ship.y - solid.y;
+        const reach = solid.r + hullRadius;
+        const dist = Math.hypot(dx, dy);
+        if (dist >= reach) continue;
+        const nx = dist > 0.001 ? dx / dist : 1;
+        const ny = dist > 0.001 ? dy / dist : 0;
+        game.ship.x = solid.x + nx * reach;
+        game.ship.y = solid.y + ny * reach;
+        const into = game.ship.vx * nx + game.ship.vy * ny;
+        if (into >= 0) continue;
+        game.ship.vx -= (1 + RESTITUTION) * into * nx;
+        game.ship.vy -= (1 + RESTITUTION) * into * ny;
+        game.ship.av = clamp(game.ship.av - (Math.random() - 0.5) * into * 0.012, -2.6, 2.6);
+        applyImpact(game, -into, nx, ny, solid.what);
+      }
+    };
+
+    /**
+     * Drag and heating in the band above a body that has an atmosphere.
+     *
+     * The band exists so the hard deck is never a surprise: it slows the
+     * ship, cooks the freight, and says so on the net well before the
+     * surface is reached. A pilot willing to pay for it can also use it to
+     * shed speed without spending propellant.
+     */
+    const applyAtmosphere = (game: GameMutable, dt: number) => {
+      for (const body of BODIES) {
+        if (!body.atmosphere) continue;
+        const top = body.radius * ATMOSPHERE_TOP;
+        const dist = distance(game.ship, body.position);
+        if (dist > top) continue;
+        const deck = body.radius * SURFACE_CONTACT;
+        const depth = clamp((top - dist) / Math.max(1, top - deck), 0, 1);
+        const speed = Math.hypot(game.ship.vx, game.ship.vy);
+        const drag = depth * depth * 0.55 * dt;
+        game.ship.vx -= game.ship.vx * drag;
+        game.ship.vy -= game.ship.vy * drag;
+        const heat = depth * speed * 0.02 * dt;
+        if (heat > 0.004) {
+          lastHarmRef.current = `heating in ${body.name}'s atmosphere`;
+          game.ship.hull = Math.max(0, game.ship.hull - heat);
+          game.cargo.forEach((item) => {
+            item.condition = Math.max(0.15, item.condition - heat * 0.004);
+          });
+          game.shake = Math.max(game.shake, depth * 4);
+          if (Math.random() < dt * 40) {
+            game.particles.push({
+              x: game.ship.x,
+              y: game.ship.y,
+              vx: game.ship.vx * -0.2 + (Math.random() - 0.5) * 40,
+              vy: game.ship.vy * -0.2 + (Math.random() - 0.5) * 40,
+              life: 0.5,
+              maxLife: 0.5,
+              size: 1.5 + Math.random() * 2.5,
+              color: Math.random() > 0.45 ? body.atmosphere : "#f4b56a",
+            });
+          }
+        }
+        nag(game, `${body.name} atmosphere. Drag building and the hull is heating — climb out.`, 3);
+      }
     };
 
     /* The truck in the title composition burns while the simulation is idle. */
@@ -874,7 +1102,7 @@ export default function EmberlineGame() {
         }
         if (appliedForce > 0) {
           const loadFactor = 0.72 + totalMass / shipDef.dryMass * 0.34;
-          game.ship.fuel = Math.max(0, game.ship.fuel - (appliedForce / shipDef.thrust) * loadFactor * dt * 0.52);
+          game.ship.fuel = Math.max(0, game.ship.fuel - (appliedForce / shipDef.thrust) * loadFactor * dt);
         }
       }
       audio.setEngine(engineAmount, muted);
@@ -890,7 +1118,10 @@ export default function EmberlineGame() {
         const dy = body.position.y - game.ship.y;
         const distSq = dx * dx + dy * dy;
         const dist = Math.sqrt(distSq);
-        const grav = Math.min(34, body.gravity / Math.max(42000, distSq));
+        const radii = dist / body.radius;
+        if (radii >= GRAVITY_REACH) continue;
+        const fade = clamp((GRAVITY_REACH - radii) / (GRAVITY_REACH - GRAVITY_FULL), 0, 1);
+        const grav = Math.min(GRAVITY_CAP, body.gravity / Math.max(42000, distSq)) * fade * fade * (3 - 2 * fade);
         game.ship.vx += (dx / Math.max(1, dist)) * grav * dt;
         game.ship.vy += (dy / Math.max(1, dist)) * grav * dt;
       }
@@ -902,12 +1133,15 @@ export default function EmberlineGame() {
         });
       }
 
+      applyAtmosphere(game, dt);
+
       game.ship.x += game.ship.vx * dt;
       game.ship.y += game.ship.vy * dt;
       if (Math.abs(game.ship.x) > WORLD.width / 2 || Math.abs(game.ship.y) > WORLD.height / 2) {
         game.ship.vx += (-game.ship.x / WORLD.width) * 6 * dt;
         game.ship.vy += (-game.ship.y / WORLD.height) * 6 * dt;
       }
+      resolveContacts(game, HULL_RADIUS[shipDef.size]);
 
       game.pickups.forEach((pickup) => {
         pickup.x += pickup.vx * dt;
@@ -948,7 +1182,8 @@ export default function EmberlineGame() {
         game.ship = { x: rescue.x, y: rescue.y, vx: 0, vy: 0, angle: STATIONS[0].orientation, av: 0, fuel: 24, hull: 52 };
         game.dockedId = "pilgrim";
         salvageSeededRef.current = false;
-        notify("Pilgrim rescue recovered the hull. Insurance excess: ₡1,400.", 7);
+        saveGame(game);
+        notify(`Hull lost to ${lastHarmRef.current}. Pilgrim rescue recovered the wreck. Insurance excess: ₡1,400.`, 8);
       }
 
       if (actionRequestRef.current || (keysRef.current[" "] && !actionLatchRef.current)) {
@@ -1032,7 +1267,7 @@ export default function EmberlineGame() {
       const speed = Math.hypot(game.ship.vx, game.ship.vy);
       const target = stationById(game.targetId);
       const targetDist = target ? distance(game.ship, target.position) : 9999;
-      const desiredZoom = game.dockedId ? 1.25 : targetDist < 260 ? 1.12 : clamp(0.88 - speed / 340, 0.48, 0.92);
+      const desiredZoom = game.dockedId ? 1.25 : targetDist < 300 ? 1.12 : clamp(0.92 - speed / 700, 0.3, 0.95);
       const title = screen === "title" ? titleLayout(width, height) : null;
       if (title) {
         cam.zoom = lerp(cam.zoom, title.camera.zoom, 0.02);
@@ -1041,8 +1276,8 @@ export default function EmberlineGame() {
         titlePoseRef.current = titleShipPose(title.anchor, title.shipScale, game.elapsed);
       } else {
         cam.zoom = lerp(cam.zoom, desiredZoom, 0.025);
-        cam.x = lerp(cam.x, game.ship.x + game.ship.vx * 1.15, 0.055);
-        cam.y = lerp(cam.y, game.ship.y + game.ship.vy * 1.15, 0.055);
+        cam.x = lerp(cam.x, game.ship.x + game.ship.vx * 1.4, 0.055);
+        cam.y = lerp(cam.y, game.ship.y + game.ship.vy * 1.4, 0.055);
       }
       const shakeX = (Math.random() - 0.5) * game.shake;
       const shakeY = (Math.random() - 0.5) * game.shake;
@@ -1060,10 +1295,31 @@ export default function EmberlineGame() {
       context.scale(cam.zoom, cam.zoom);
       context.translate(-cam.x, -cam.y);
 
-      context.strokeStyle = "rgba(125,144,137,.08)";
-      context.lineWidth = 1 / cam.zoom;
+      /*
+        * Hazard rings, drawn at the bodies' TRUE centres rather than at the
+        * parallax-shifted centres they are painted at. The painting is
+        * background; these rings describe the simulation, which is where
+        * the ship actually is. Outermost is the old gravity guide, then the
+        * top of the atmosphere, then the deck — and the deck brightens as
+        * the ship closes on it, so the last ring is the loudest.
+        */
       BODIES.forEach((body) => {
-        context.beginPath(); context.arc(body.position.x, body.position.y, body.radius + 255, 0, TAU); context.stroke();
+        const deck = body.radius * SURFACE_CONTACT;
+        context.lineWidth = 1 / cam.zoom;
+        context.strokeStyle = "rgba(125,144,137,.08)";
+        context.beginPath(); context.arc(body.position.x, body.position.y, body.radius * GRAVITY_REACH, 0, TAU); context.stroke();
+        if (body.atmosphere) {
+          context.strokeStyle = "rgba(150,190,190,.14)";
+          context.setLineDash([14 / cam.zoom, 18 / cam.zoom]);
+          context.beginPath(); context.arc(body.position.x, body.position.y, body.radius * ATMOSPHERE_TOP, 0, TAU); context.stroke();
+          context.setLineDash([]);
+        }
+        const near = clamp(1 - (distance(game.ship, body.position) - deck) / (body.radius * 0.9), 0, 1);
+        context.strokeStyle = `rgba(214,86,58,${(0.15 + near * 0.6).toFixed(3)})`;
+        context.lineWidth = (1 + near * 1.5) / cam.zoom;
+        context.setLineDash([5 / cam.zoom, 9 / cam.zoom]);
+        context.beginPath(); context.arc(body.position.x, body.position.y, deck, 0, TAU); context.stroke();
+        context.setLineDash([]);
       });
 
       context.save();
@@ -1080,7 +1336,7 @@ export default function EmberlineGame() {
       context.setLineDash([]);
       for (let i = 0; i < 24; i += 1) {
         const angle = i * 2.41;
-        const radius = 40 + (i * 73) % 330;
+        const radius = 70 + (i * 119) % 520;
         context.fillStyle = i % 3 ? "#3f403a" : "#7b6547";
         context.fillRect(Math.cos(angle) * radius, Math.sin(angle) * radius, 2 + (i % 4), 1 + (i % 3));
       }
@@ -1401,9 +1657,9 @@ export default function EmberlineGame() {
           <div className="guide-grid">
             <article><span>01</span><h3>Take local work</h3><p>While docked, choose a manifest from the contract board. Repeated routes gradually pay less as local demand is met.</p></article>
             <article><span>02</span><h3>Secure the load</h3><p>Release the berth, drift within 92 m of each staged unit, match its speed, then press <kbd>SPACE</kbd>. Cargo changes mass and handling.</p></article>
-            <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward. <kbd>A</kbd>/<kbd>D</kbd> rotate. <kbd>Q</kbd>/<kbd>E</kbd> strafe. The teal line is your true velocity.</p></article>
-            <article><span>04</span><h3>Make a clean arrival</h3><p>Hold <kbd>SHIFT</kbd> for assisted braking. Enter a station’s capture envelope below 36 m/s, then press <kbd>SPACE</kbd>.</p></article>
-            <article><span>05</span><h3>Read gravity</h3><p>Curved guide rings mark strong gravity wells. Close planetary passes bend your route and can save propellant.</p></article>
+            <article><span>03</span><h3>Fly the vector</h3><p><kbd>W</kbd> drives forward. <kbd>A</kbd>/<kbd>D</kbd> rotate. <kbd>Q</kbd>/<kbd>E</kbd> strafe. The teal line is your true velocity. Burn, coast, flip, brake — a loaded round trip costs most of a tank, so the coast is free and the burn is not.</p></article>
+            <article><span>04</span><h3>Make a clean arrival</h3><p>Station structure is solid. Hold <kbd>SHIFT</kbd> for assisted braking, enter the capture envelope below 36 m/s, then press <kbd>SPACE</kbd>. Contact above 18 m/s costs hull; above 55 m/s it tears a container off the spine.</p></article>
+            <article><span>05</span><h3>Respect the deck</h3><p>The red ring is a planet’s surface and it is solid. The dashed ring above it is atmosphere: drag and heat, survivable briefly, useful for shedding speed. Loaded, you cannot climb straight out of a deep well.</p></article>
             <article><span>06</span><h3>Work The Wake</h3><p>Unmarked debris lies northeast of Rayleigh. Fit a better scanner, recover useful objects, and deliver salvage to any port.</p></article>
           </div>
           <button className="primary-button" onClick={() => setHelpOpen(false)}>Return to the flight deck <span>→</span></button>

@@ -7,7 +7,23 @@ import type {
   UpgradeDefinition,
 } from "./types";
 
-export const WORLD = { width: 5200, height: 3600 };
+/**
+ * Scale of the system, and the one relationship that keeps it playable.
+ *
+ * A route is meant to be flown as burn / coast / flip / burn, so the trip
+ * time comes from thrust-to-mass, not from the map alone. Ships accelerate
+ * at 13-19 m/s² empty, which puts the typical Pilgrim - Sinter run near 30 s
+ * empty and 40 s loaded, and the longest run in the system near 45 s. A
+ * loaded round trip burns most of a tank: propellant is the budget you plan
+ * a route against.
+ *
+ * Body `gravity` is quoted against the true squared distance, so it scales
+ * with the square of any change to these positions. It was scaled with them
+ * here, which leaves gravity per unit of ship acceleration the thing that
+ * actually changed: a close pass now bends a loaded ship, and inside roughly
+ * two radii of Rayleigh a loaded courier can no longer climb straight out.
+ */
+export const WORLD = { width: 13000, height: 9000 };
 
 export const CARGO: Record<string, CargoDefinition> = {
   ore: { id: "ore", name: "Nickel ore", short: "ORE", mass: 18, value: 260, color: "#655e54", accent: "#d29a54", shape: "ore" },
@@ -26,9 +42,9 @@ export const BODIES: CelestialBody[] = [
     id: "cinder",
     name: "Rayleigh",
     kind: "temperate industrial world",
-    position: { x: 0, y: 120 },
-    radius: 470,
-    gravity: 3500000,
+    position: { x: 0, y: 300 },
+    radius: 705,
+    gravity: 21900000,
     color: "#9e522f",
     atmosphere: "#e39959",
     description: "A rust-gold world under a scattering amber sky. Its orbital elevators feed the oldest yards in the system.",
@@ -37,9 +53,9 @@ export const BODIES: CelestialBody[] = [
     id: "morrow",
     name: "Nernst",
     kind: "ice moon",
-    position: { x: 1760, y: -980 },
-    radius: 235,
-    gravity: 680000,
+    position: { x: 4400, y: -2450 },
+    radius: 350,
+    gravity: 4250000,
     color: "#6b7e83",
     atmosphere: "#9cc4c4",
     description: "A fractured moon a few degrees above absolute quiet, rich in water ice and deep blue shadow.",
@@ -48,9 +64,9 @@ export const BODIES: CelestialBody[] = [
     id: "brindle",
     name: "Roche",
     kind: "captured metallic body",
-    position: { x: -1910, y: -850 },
-    radius: 145,
-    gravity: 250000,
+    position: { x: -4775, y: -2125 },
+    radius: 215,
+    gravity: 1560000,
     color: "#625749",
     description: "A nickel-iron body caught at the edge of its limit, cut through with tunnels and navigation lamps.",
   },
@@ -62,7 +78,7 @@ export const STATIONS: Station[] = [
     name: "Pilgrim Exchange",
     callSign: "PX-01",
     kind: "commerce & habitation",
-    position: { x: -790, y: 40 },
+    position: { x: -1975, y: 100 },
     color: "#d9b15f",
     orientation: 0.08,
     size: "standard",
@@ -76,7 +92,7 @@ export const STATIONS: Station[] = [
     name: "Sinter Refinery",
     callSign: "SN-44",
     kind: "ore refinery",
-    position: { x: 790, y: 700 },
+    position: { x: 1975, y: 1750 },
     color: "#d66b3c",
     orientation: -0.55,
     size: "large",
@@ -90,7 +106,7 @@ export const STATIONS: Station[] = [
     name: "Anvil Gate Shipyard",
     callSign: "AG-17",
     kind: "shipyard",
-    position: { x: -1160, y: 920 },
+    position: { x: -2900, y: 2300 },
     color: "#ca8e52",
     orientation: 0.35,
     size: "large",
@@ -104,7 +120,7 @@ export const STATIONS: Station[] = [
     name: "Deepwell Extraction",
     callSign: "DW-3",
     kind: "mining concern",
-    position: { x: -1670, y: -920 },
+    position: { x: -4175, y: -2300 },
     color: "#af7a45",
     orientation: 0.82,
     size: "standard",
@@ -118,7 +134,7 @@ export const STATIONS: Station[] = [
     name: "Bluehour Depot",
     callSign: "BH-08",
     kind: "ice processing & fuel",
-    position: { x: 1540, y: -1310 },
+    position: { x: 3850, y: -3275 },
     color: "#75a8a7",
     orientation: -0.24,
     size: "standard",
@@ -132,7 +148,7 @@ export const STATIONS: Station[] = [
     name: "Quiet Arc Laboratory",
     callSign: "QA-12",
     kind: "research platform",
-    position: { x: 2260, y: -500 },
+    position: { x: 5650, y: -1250 },
     color: "#88aaa7",
     orientation: 0.12,
     size: "small",
@@ -146,25 +162,25 @@ export const STATIONS: Station[] = [
 export const SHIPS: ShipDefinition[] = [
   {
     id: "courier", name: "Kestrel", model: "U-3", role: "Light courier", cost: 0,
-    dryMass: 32, thrust: 2450, reverseThrust: 1180, rotation: 5.3, fuelCapacity: 110,
+    dryMass: 32, thrust: 620, reverseThrust: 300, rotation: 2.9, fuelCapacity: 110,
     slots: 2, towRating: 18, size: "small", color: "#d8d0bd",
     description: "Quick, frugal, and welcome at every dock. A tiny ship with excellent hands.",
   },
   {
     id: "freighter", name: "Mule", model: "F-12", role: "General freighter", cost: 17800,
-    dryMass: 72, thrust: 4100, reverseThrust: 1900, rotation: 3.1, fuelCapacity: 190,
+    dryMass: 72, thrust: 1010, reverseThrust: 470, rotation: 1.7, fuelCapacity: 150,
     slots: 4, towRating: 42, size: "standard", color: "#bba06f",
     description: "The system’s familiar working ship: four clamps, long range, honest handling.",
   },
   {
     id: "hauler", name: "Atlas", model: "H-40", role: "Bulk carrier", cost: 62000,
-    dryMass: 155, thrust: 6200, reverseThrust: 2600, rotation: 1.55, fuelCapacity: 360,
+    dryMass: 155, thrust: 2100, reverseThrust: 900, rotation: 0.9, fuelCapacity: 240,
     slots: 8, towRating: 85, size: "large", color: "#9e8358",
     description: "A slow external-frame hauler. Expensive to move, magnificent when fully loaded.",
   },
   {
     id: "tug", name: "Mastiff", model: "T-9", role: "Salvage tug", cost: 29500,
-    dryMass: 88, thrust: 5200, reverseThrust: 3050, rotation: 4.2, fuelCapacity: 205,
+    dryMass: 88, thrust: 1320, reverseThrust: 780, rotation: 2.3, fuelCapacity: 165,
     slots: 2, towRating: 110, size: "standard", color: "#b96541",
     description: "Compact, over-engined, and built around a deep-frame grapple drum.",
   },
@@ -196,7 +212,7 @@ export const CONTRACTS: ContractDefinition[] = [
 
 export const SALVAGE_ZONE = {
   name: "The Wake",
-  center: { x: 630, y: -1050 },
-  radius: 390,
+  center: { x: 1575, y: -2625 },
+  radius: 620,
   description: "A slow cloud of launch hardware, dead relays, and one persistent unknown return.",
 };

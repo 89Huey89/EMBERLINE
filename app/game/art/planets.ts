@@ -7,7 +7,8 @@ import type { CelestialBody, Vec2 } from "../types";
  * at 92% of their true radius, so they drift more slowly than the stations
  * and freight that share the camera transform. The simulation is untouched
  * by this: gravity and the gravity guide rings still use the true position
- * and the true radius. Nothing in the world collides with a planet.
+ * and the true radius. The surface a ship strikes is derived from the drawn
+ * disc — see SURFACE_CONTACT — so the hard deck is where the eye puts it.
  *
  * `drawPlanet` paints in planet-local space with the disc centred on the
  * origin, so the caller translates to `planetParallax(body, camera)` first
@@ -25,6 +26,28 @@ const TAU = Math.PI * 2;
 export const PLANET_PARALLAX = 0.85;
 /** Drawn radius as a fraction of the body's true (simulation) radius. */
 export const PLANET_SCALE = 0.92;
+
+/**
+ * Ship distance from a body's TRUE centre at which it touches the DRAWN
+ * surface, as a multiple of the body's true radius.
+ *
+ * The parallax shift is proportional to the camera's own offset from the
+ * body, and the camera rides the ship, so a ship `d` out sits `d * PLANET_
+ * PARALLAX` from the drawn centre. Setting that equal to the drawn radius
+ * leaves a constant: contact always happens at the same multiple of the
+ * radius, whatever the body or the range. That is what the simulation
+ * collides against, and what the terrain warning ring is drawn at, so the
+ * hard deck agrees with the painting instead of with the raw radius.
+ */
+export const SURFACE_CONTACT = PLANET_SCALE / PLANET_PARALLAX;
+
+/**
+ * Top of the atmosphere on bodies that have one, as a multiple of the true
+ * radius. Between here and SURFACE_CONTACT a ship meets drag and heating:
+ * the band is the warning that the deck is coming, and a way to shed speed
+ * for free if the pilot is willing to cook the freight.
+ */
+export const ATMOSPHERE_TOP = 1.3;
 
 /** System light angle. Everything on every planet is lit from here. */
 const LIGHT = -2.53; // sun at upper left, toward the busy side of the system

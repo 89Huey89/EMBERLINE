@@ -16,8 +16,16 @@ import { PAINT } from "./ships";
 
 const TAU = Math.PI * 2;
 
-/** The simulation's docking capture radius, in world units. */
-export const BERTH_CAPTURE = 105;
+/**
+ * The simulation's docking capture radius, in world units.
+ *
+ * It has to clear `stationColliders` by a wide margin: the pilot needs room
+ * to cross into the envelope, read the speed, and press the clamp before the
+ * structure is in reach. The worst case is the Atlas at a large station,
+ * which makes contact around 80 units out, so the envelope sits well beyond
+ * that and the berth pad at 100 stays in open space.
+ */
+export const BERTH_CAPTURE = 140;
 
 export type StationArtState = {
   time: number;
@@ -45,6 +53,40 @@ export function berthPoint(station: Station, distance: number) {
 
 export function stationScale(station: Station) {
   return station.size === "large" ? 1.22 : station.size === "small" ? 0.76 : 1;
+}
+
+/**
+ * The solid parts of a station, as circles in world space.
+ *
+ * Four discs walk the boom from the hub outward — hub, tank pair, radiator
+ * bank, solar array — sized to swallow the drawing at each stop and to
+ * overlap their neighbours, so the structure reads as one continuous body
+ * rather than four beads with gaps between them. They are derived from the
+ * local-space geometry in `drawBody`, so moving a part in the art moves what
+ * the ship hits. The masts are deliberately absent: a lattice antenna is not
+ * something a pilot can see well enough to be punished for clipping, and the
+ * hub disc stops at the dome rather than at the habitat ring on the large
+ * stations, so the berth stays reachable by the widest ship in the fleet.
+ *
+ * Nothing here reaches toward -x, which is where the berth arm is. That
+ * leaves the approach corridor to the pad open from the front and solid from
+ * every other angle: the way in is the way the lights point.
+ */
+export function stationColliders(station: Station) {
+  const scale = stationScale(station);
+  const cos = Math.cos(station.orientation);
+  const sin = Math.sin(station.orientation);
+  const local: [number, number][] = [
+    [0, station.size === "large" ? 34 : 26], // dome, module block, hub core
+    [31, 26], // propellant tanks
+    [79, 34], // radiator bank
+    [140, 38], // solar array
+  ];
+  return local.map(([along, radius]) => ({
+    x: station.position.x + cos * along * scale,
+    y: station.position.y + sin * along * scale,
+    r: radius * scale,
+  }));
 }
 
 /* ------------------------------------------------------------------ */
