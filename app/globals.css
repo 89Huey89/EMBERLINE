@@ -189,7 +189,7 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
 .bar-row b { color: #bbc0b9; text-align: right; font-size: 10px; font-weight: 600; }
 /* gauges: a strip of ten lamps, lit from the left */
 .meter { height: 6px; background: repeating-linear-gradient(90deg, #2a2d2b 0 calc(10% - 2px), transparent calc(10% - 2px) 10%); overflow: hidden; position: relative; }
-.meter i { display: block; height: 100%; background: repeating-linear-gradient(90deg, var(--teal) 0 calc(10% - 2px), transparent calc(10% - 2px) 10%); background-size: 100% 100%; }
+.meter i { display: block; height: 100%; transition: width .2s linear; background: repeating-linear-gradient(90deg, var(--teal) 0 calc(10% - 2px), transparent calc(10% - 2px) 10%); background-size: 100% 100%; }
 .meter i::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 2px), var(--plate) calc(10% - 2px) 10%); pointer-events: none; }
 .meter.hull i { background-image: repeating-linear-gradient(90deg, var(--amber) 0 calc(10% - 2px), transparent calc(10% - 2px) 10%); }
 .assist-toggle, .tow-button { width: 100%; margin-top: 14px; min-height: 34px; padding: 0 10px; justify-content: flex-start; color: var(--muted); border-color: var(--plate-edge); background: linear-gradient(180deg, var(--plate-3), var(--plate-2)); box-shadow: 0 2px 0 #000; font-size: 8px; letter-spacing: .14em; }
@@ -334,21 +334,29 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
 }
 
 /* ---------- the cockpit ----------
-   On a narrow screen the flight deck is one instrument rather than a set of
-   plates pinned around a window. The dash runs along the top: registry,
-   account and utilities on the first row, speed, range, the two gauges and
-   the assist lamp on the second, and a ledger strip along the bottom edge
-   that unfolds the manifest or the gate checklist as a drawer. The console
-   runs along the bottom: seven keycaps set into one steel plate. Between them
-   is the window, and nothing floats over it. Dock and modal sheets fill from
-   the bottom or edge to edge. */
+   On a phone the flight deck is quiet. A thin translucent HUD runs along the
+   top: speed, range and closing, the two gauges as hairlines, three tool
+   icons, and a ledger line that only appears when there is something to say
+   and unfolds into a drawer. One row of keys runs along the bottom. The window
+   between them takes most of the screen. Nothing wears castings, hazard bands
+   or tape here; the panels are dark glass with a single hairline, amber is
+   kept for the drive key and the primary action, teal for the instruments.
+   Held on its side, the keys gather into a pod under each thumb and the dock
+   sheet stands beside the berth. */
 @media (max-width: 760px), (pointer: coarse) and (max-height: 540px) {
   :root {
     --sat: env(safe-area-inset-top, 0px);
     --sab: env(safe-area-inset-bottom, 0px);
-    --console-h: calc(112px + var(--sab));
-    --sheet-h: min(60svh, calc(100svh - 220px));
+    --sal: env(safe-area-inset-left, 0px);
+    --sar: env(safe-area-inset-right, 0px);
+    --console-h: calc(74px + var(--sab));
+    --sheet-h: min(62svh, calc(100svh - 200px));
+    --glass: rgba(8, 11, 12, .9);
+    --hair: rgba(231, 223, 205, .12);
+    --hair-strong: rgba(231, 223, 205, .22);
   }
+  /* the label face aliases the mono font, which next/font declares on <body>; declared any higher it would not resolve */
+  body { --label: 700 8px/1 var(--font-mono-ui), ui-monospace, monospace; --reading: 600 10px/1 var(--font-mono-ui), ui-monospace, monospace; }
   .game-shell { min-height: 0; }
 
   /* opening frame */
@@ -365,192 +373,199 @@ button:disabled { opacity: .38; cursor: not-allowed; transform: none !important;
   .feature-line span + span::before { margin-right: 14px; }
   .title-log { display: none; }
 
-  /* the window frame: two steel rails the dash and console both land on */
-  .cockpit-rails { position: absolute; z-index: 3; inset: 0; pointer-events: none; border-left: 4px solid #101314; border-right: 4px solid #101314; box-shadow: inset 1px 0 0 var(--plate-edge), inset -1px 0 0 var(--plate-edge); }
+  /* ---- HUD ---- */
+  .hud { position: absolute; z-index: 6; top: 0; left: 0; right: 0; padding-top: var(--sat); background: var(--glass); border-bottom: 1px solid var(--hair); }
+  .hud strong, .hud b { font-variant-numeric: tabular-nums; }
+  .hud-main { display: flex; align-items: center; gap: 12px; height: 46px; padding: 0 6px 0 16px; }
+  .hud-speed { display: flex; align-items: baseline; gap: 5px; }
+  .hud-speed strong { min-width: 2ch; font-family: var(--font-mono-ui), monospace; font-size: 26px; font-weight: 400; letter-spacing: -.03em; line-height: 1; }
+  .hud-speed small { color: var(--teal); font: var(--label); letter-spacing: .1em; }
+  .hud-nav { flex: 1; display: flex; flex-direction: column; gap: 5px; min-width: 0; padding-left: 12px; border-left: 1px solid var(--hair); }
+  .hud-nav span { display: flex; align-items: baseline; gap: 8px; overflow: hidden; white-space: nowrap; }
+  .hud-nav i { min-width: 50px; color: var(--muted); font: var(--label); font-style: normal; letter-spacing: .14em; }
+  .hud-nav b { color: var(--bone-dim); font: var(--reading); }
+  .hud-nav b.hot { color: var(--danger); }
+  .hud-assist { display: flex; align-items: center; gap: 5px; height: 16px; margin-left: 6px; padding: 0 7px; border: 1px solid var(--hair); border-radius: 2px; background: transparent; color: var(--muted); cursor: pointer; font: var(--label); letter-spacing: .12em; transition: color .15s, border-color .15s; }
+  .hud-assist::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #4d524c; transition: background .15s, box-shadow .15s; }
+  .hud-assist.active { color: var(--teal); border-color: rgba(112,170,164,.45); }
+  .hud-assist.active::before { background: var(--teal); box-shadow: 0 0 6px rgba(112,170,164,.7); }
+  .hud-tools { display: flex; }
+  .hud-tools button { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 2px; background: transparent; color: var(--bone-dim); cursor: pointer; transition: background-color .12s, color .12s; }
+  .hud-tools button:active { background: rgba(231,223,205,.1); color: var(--bone); }
+  .hud-tools button.off { color: var(--muted); }
+  .hud-tools svg { width: 19px; height: 19px; }
 
-  /* dash */
-  .dash { position: absolute; z-index: 6; top: 0; left: 0; right: 0; padding-top: var(--sat); border-width: 0 0 1px; }
-  .dash.plate { box-shadow: 0 2px 0 #000, 0 10px 30px rgba(0,0,0,.5); }
-  .dash.plate::before { background: var(--tape) 0 100% / 100% 3px no-repeat, var(--castings); }
-  .dash-top { display: flex; align-items: stretch; height: 34px; border-bottom: 1px solid var(--plate-edge); }
-  .dash-brand { position: relative; display: flex; flex-direction: column; justify-content: center; margin: 4px 0 4px 8px; padding: 0 14px 0 8px; color: #17140d; background: var(--bone); border: 1px solid #0b0a07; box-shadow: inset 0 0 0 1px rgba(255,255,255,.35), 0 1px 0 #000; }
-  .dash-brand::after { content: ""; position: absolute; top: 0; bottom: 0; right: 5px; width: 3px; background: var(--oxide); }
-  .dash-brand b { font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif; font-size: 14px; letter-spacing: .04em; line-height: 1; }
-  .dash-brand span { margin-top: 2px; color: #4a4536; font-family: var(--font-mono-ui), monospace; font-size: 6px; font-weight: 700; letter-spacing: .14em; }
-  .dash-account { flex: 1; display: flex; flex-direction: column; justify-content: center; min-width: 0; margin-left: 8px; padding: 0 10px; border-left: 1px solid var(--plate-edge); }
-  .dash-account span { color: var(--muted); font: var(--stencil); font-size: 6px; letter-spacing: .2em; }
-  .dash-account strong { margin-top: 3px; overflow: hidden; font-family: var(--font-mono-ui), monospace; font-size: 13px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
-  .dash-account strong.arrears { color: var(--danger); }
-  .dash-nav { display: flex; gap: 4px; align-items: center; padding: 0 8px; border-left: 1px solid var(--plate-edge); }
-  .dash-nav button { min-width: 40px; height: 24px; padding: 0 6px; border: 1px solid #0b0a07; border-radius: 2px; background: linear-gradient(180deg, #f1eadb, #cfc7b4); color: #17140d; cursor: pointer; font: var(--stencil); font-size: 7px; letter-spacing: .1em; box-shadow: 0 2px 0 #6f6858, inset 0 1px 0 #fff; }
-  .dash-nav button:active, .dash-nav button.off { transform: translateY(1px); box-shadow: 0 1px 0 #6f6858, inset 0 1px 0 #fff; }
-  .dash-nav button.off { background: linear-gradient(180deg, #9a9385, #7a7364); color: #1b1a16; }
+  .hud-gauges { display: grid; grid-template-columns: auto 1fr auto auto 1fr auto auto; align-items: center; column-gap: 8px; height: 22px; padding: 0 10px 4px 16px; }
+  .hud-gauges span { color: var(--muted); font: var(--label); letter-spacing: .14em; }
+  .hud-gauges span + .gauge + b + span { margin-left: 10px; }
+  .hud-gauges b { min-width: 3.2ch; color: var(--bone-dim); font: var(--reading); font-size: 9px; text-align: right; }
+  .gauge { height: 3px; overflow: hidden; background: rgba(231,223,205,.1); }
+  .gauge i { display: block; height: 100%; background: var(--teal); transition: width .2s linear; }
+  .gauge.hull i { background: var(--amber); }
 
-  .dash-instruments { display: grid; grid-template-columns: auto auto 1fr auto; align-items: stretch; height: 52px; border-bottom: 1px solid var(--plate-edge); }
-  .dash-instruments > * { display: flex; flex-direction: column; justify-content: center; min-width: 0; padding: 0 10px; border-right: 1px solid var(--plate-edge); }
-  .dash-instruments > :last-child { border-right: 0; }
-  .dash-speed { display: grid; grid-template-columns: auto auto; align-items: baseline; align-content: center; column-gap: 4px; padding-left: 12px; }
-  .dash-speed span { grid-column: 1 / 3; color: var(--teal); font: var(--stencil); font-size: 6px; letter-spacing: .2em; }
-  .dash-speed strong { margin-top: 3px; font-family: var(--font-mono-ui), monospace; font-size: 24px; font-weight: 400; letter-spacing: -.02em; line-height: 1; }
-  .dash-speed small { color: var(--muted); font-family: var(--font-mono-ui), monospace; font-size: 8px; }
-  .dash-range { gap: 4px; }
-  .dash-range div { display: flex; justify-content: space-between; gap: 10px; }
-  .dash-range span { color: var(--muted); font: var(--stencil); font-size: 6px; letter-spacing: .14em; white-space: nowrap; }
-  .dash-range b { color: #c7c8bd; font-family: var(--font-mono-ui), monospace; font-size: 10px; font-weight: 600; white-space: nowrap; }
-  .dash-range b.hot { color: var(--danger); }
-  .dash-gauges { gap: 6px; }
-  .dash-gauges .bar-row { grid-template-columns: 32px 1fr 26px; gap: 6px; margin: 0; font-size: 6px; }
-  .dash-gauges .bar-row b { font-size: 9px; }
-  .dash-gauges .meter { height: 5px; }
-  .dash-assist { align-items: center; gap: 4px; padding: 0 10px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: var(--stencil); font-size: 6px; letter-spacing: .14em; }
-  .dash-assist .status-light { width: 8px; height: 8px; margin: 0 0 3px; background: #4d524c; box-shadow: inset 0 0 0 1px #0b0a07; }
-  .dash-assist.active { color: var(--teal); }
-  .dash-assist.active .status-light { background: var(--teal); box-shadow: 0 0 8px rgba(112,170,164,.8); }
+  /* the ledger line: only present when a manifest is aboard, a gate is near, or the tank is dry */
+  .hud-ledger { display: flex; align-items: stretch; border-top: 1px solid var(--hair); }
+  .ledger-item { position: relative; flex: 1 1 auto; display: flex; align-items: baseline; gap: 8px; min-width: 0; height: 32px; padding: 0 30px 0 16px; border: 0; border-right: 1px solid var(--hair); background: transparent; color: var(--bone); cursor: pointer; text-align: left; transition: background-color .15s; }
+  .ledger-item:last-child { border-right: 0; }
+  .ledger-item::before { content: ""; position: absolute; left: 0; top: 9px; bottom: 9px; width: 2px; background: var(--amber); }
+  .ledger-item::after { content: ""; position: absolute; right: 15px; top: 50%; width: 5px; height: 5px; margin-top: -4px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(45deg); transition: transform .2s, margin-top .2s; }
+  .ledger-item.tow::after { display: none; }
+  .ledger-item.open { background: rgba(231,223,205,.05); }
+  .ledger-item.open::after { margin-top: -1px; transform: rotate(-135deg); }
+  .ledger-item b { flex: 0 1 auto; overflow: hidden; font-size: 12px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+  .ledger-item em { flex: 1 1 0; overflow: hidden; color: var(--muted); font: var(--reading); font-size: 9px; font-style: normal; white-space: nowrap; text-overflow: ellipsis; }
+  .ledger-item.gate { flex: 0 0 auto; padding-right: 30px; }
+  .ledger-item.gate em, .ledger-item.tow em { flex: 0 0 auto; }
+  .ledger-item.gate::before { background: var(--oxide); }
+  .ledger-item.gate.holding::before { background: var(--teal); }
+  .ledger-item.gate.holding em { color: var(--teal); }
+  .ledger-item.tow { flex: 0 1 auto; padding-right: 16px; color: var(--danger); }
+  .ledger-item.tow::before { background: var(--danger); animation: urgency 1s steps(1) infinite; }
+  .ledger-item.tow em { color: var(--danger); }
 
-  /* the ledger strip: every open item is a cell with its own label stripe */
-  .dash-ledger { display: flex; align-items: stretch; min-height: 38px; }
-  .ledger-cell { position: relative; flex: 1 1 0; display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; padding: 5px 22px 6px 12px; border: 0; border-right: 1px solid var(--plate-edge); background: transparent; color: var(--bone); cursor: pointer; text-align: left; }
-  .ledger-cell:last-child { border-right: 0; }
-  .ledger-cell::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--amber); }
-  .ledger-cell::after { content: "▾"; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 10px; }
-  .ledger-cell.open { background: rgba(220,169,82,.08); }
-  .ledger-cell.open::after { content: "▴"; color: var(--amber); }
-  .ledger-cell span { color: var(--amber); font: var(--stencil); font-size: 6px; letter-spacing: .2em; }
-  .ledger-cell b { overflow: hidden; font-size: 11px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
-  .ledger-cell small { overflow: hidden; color: var(--muted); font-family: var(--font-mono-ui), monospace; font-size: 8px; white-space: nowrap; text-overflow: ellipsis; }
-  .ledger-cell.gate { flex: 0 1 auto; max-width: 46%; }
-  .ledger-cell.gate::before { background: var(--oxide); }
-  .ledger-cell.gate span { color: var(--oxide); }
-  .ledger-cell.gate.holding::before { background: var(--teal); }
-  .ledger-cell.gate.holding span { color: var(--teal); }
-  .ledger-cell.tow { flex-basis: 100%; }
-  .ledger-cell.tow::before { background: var(--danger); animation: urgency 1s steps(1) infinite; }
-  .ledger-cell.tow::after { content: "→"; color: var(--danger); }
-  .ledger-cell.tow span { color: var(--danger); }
-  .dash-ledger:has(.tow) { flex-wrap: wrap; }
-  .dash-ledger:has(.tow) .ledger-cell:not(.tow) { border-bottom: 1px solid var(--plate-edge); }
+  /* the drawer hangs off the HUD so it never moves the ship */
+  .hud > .hud-drawer { position: absolute; z-index: 2; top: 100%; left: 0; right: 0; max-height: calc(100svh - var(--console-h) - 140px); overflow-y: auto; padding: 12px 16px 14px; background: var(--glass); border-bottom: 1px solid var(--hair); scrollbar-width: thin; animation: drawer-in .2s ease-out; }
+  .hud-drawer .panel-kicker { padding-bottom: 9px; border-bottom-color: var(--hair-strong); }
+  .drawer-close { min-height: 22px; padding: 0 9px; border: 1px solid var(--hair-strong); background: transparent; color: var(--amber); cursor: pointer; font: var(--label); letter-spacing: .12em; text-transform: uppercase; }
+  .drawer-close:active { color: #17140d; background: var(--amber); border-color: var(--amber); }
+  .hud-drawer h2 { margin: 12px 0 5px; font-size: 16px; font-weight: 520; letter-spacing: -.01em; }
+  .hud-drawer .mission-detail > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .hud-drawer .manifest-line { margin-top: 10px; }
+  .hud-drawer .manifest-line .cargo-portrait { width: 72px; height: 38px; }
+  .hud-drawer .route-line { margin: 10px 0; }
+  .hud-drawer .objective { padding: 8px 11px; }
+  .hud-drawer .timer { margin-top: 10px; padding-top: 9px; }
+  .hud-drawer .text-button { padding-top: 11px; }
+  .hud-drawer .line-detail .telemetry-row { margin-top: 8px; }
+  .hud-drawer .line-detail .requirement { display: block; margin-top: 10px; color: var(--muted); font-size: 9px; line-height: 1.5; }
+  .drawer-foot { display: flex; gap: 18px; margin-top: 11px; padding-top: 9px; border-top: 1px dashed var(--hair-strong); color: var(--muted); font: var(--label); letter-spacing: .16em; }
+  .drawer-foot b { color: var(--bone); font-size: 10px; }
+  .drawer-foot b.arrears { color: var(--danger); }
 
-  /* the drawer hangs off the dash so it never moves the ship */
-  .dash > .dash-drawer { position: absolute; z-index: 2; top: 100%; left: 0; right: 0; max-height: calc(100svh - var(--console-h) - 150px); overflow-y: auto; padding: 10px 14px 12px; background: var(--plate); border-bottom: 1px solid var(--plate-edge); box-shadow: 0 2px 0 #000, 0 16px 36px rgba(0,0,0,.5); scrollbar-width: thin; }
-  .dash-drawer .panel-kicker { padding-bottom: 8px; }
-  .drawer-close { padding: 1px 8px; border: 1px solid var(--line-strong); background: transparent; color: var(--amber); cursor: pointer; font-size: 11px; line-height: 1.3; }
-  .dash-drawer h2 { margin: 12px 0 4px; font-size: 15px; font-weight: 520; }
-  .dash-drawer .mission-detail > p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
-  .dash-drawer .manifest-line .cargo-portrait { width: 72px; height: 38px; }
-  .dash-drawer .route-line { margin: 10px 0; }
-  .dash-drawer .objective { padding: 7px 10px; }
-  .dash-drawer .text-button { padding-top: 10px; }
-  .dash-drawer .line-detail .requirement { display: block; margin-top: 10px; color: var(--muted); font-size: 8px; line-height: 1.5; }
-  .drawer-foot { display: flex; gap: 16px; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line-strong); color: var(--muted); font: var(--stencil); font-size: 7px; letter-spacing: .16em; }
-  .drawer-foot b { color: var(--bone); font-size: 9px; }
+  /* ---- console ---- */
+  .console { position: absolute; z-index: 6; left: 0; right: 0; bottom: 0; height: var(--console-h); display: flex; gap: 6px; padding: 8px calc(10px + var(--sar)) calc(8px + var(--sab)) calc(10px + var(--sal)); background: var(--glass); border-top: 1px solid var(--hair); }
+  .pod { display: contents; }
+  .key { position: relative; flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; min-width: 0; padding: 0; border: 1px solid var(--hair); border-radius: 3px; background: rgba(231,223,205,.05); color: var(--bone); cursor: pointer; font: var(--label); letter-spacing: .12em; touch-action: none; transition: background-color .08s, border-color .08s, transform .08s; }
+  .key-icon { width: 20px; height: 20px; }
+  .key span { color: var(--muted); transition: color .08s; }
+  .key.down, .key:active { background: rgba(231,223,205,.18); border-color: var(--hair-strong); transform: scale(.97); }
+  .key.down span, .key:active span { color: var(--bone); }
+  .key.thrust { flex: 1.8 1 0; background: var(--amber); border-color: var(--amber); color: #17140d; }
+  .key.thrust span { color: #4d3a14; }
+  .key.thrust.down, .key.thrust:active { background: var(--amber-light); border-color: var(--amber-light); }
+  .key.thrust.down span, .key.thrust:active span { color: #17140d; }
+  .key.brake, .key.clamp { border-color: rgba(220,169,82,.4); color: var(--amber); }
+  .key.brake span, .key.clamp span { color: var(--amber-deep); }
+  .key.brake.down, .key.brake:active, .key.clamp:active { background: rgba(220,169,82,.2); border-color: var(--amber); }
+  .key.brake.down span, .key.brake:active span, .key.clamp:active span { color: var(--amber); }
 
-  /* console */
-  .console { position: absolute; z-index: 6; left: 0; right: 0; bottom: 0; height: var(--console-h); display: grid; grid-template-columns: 1fr 1fr 1.45fr 1fr 1fr; grid-template-rows: 1fr 1fr; grid-template-areas: "port stbd thrust left right" "port stbd thrust brake clamp"; gap: 6px; padding: 13px 8px calc(9px + var(--sab)); border-width: 1px 0 0; }
-  .console.plate { background: linear-gradient(180deg, #1c1e1c, #101314); box-shadow: 0 -2px 0 #000, 0 -12px 30px rgba(0,0,0,.5); }
-  .console.plate::before { background: var(--hazard) 0 0 / 100% 5px no-repeat, var(--castings); }
-  .key { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0; padding: 0; border: 1px solid #0b0a07; border-radius: 2px; background: linear-gradient(180deg, #f1eadb, #cfc7b4); color: #17140d; cursor: pointer; font: var(--stencil); font-size: 7px; letter-spacing: .1em; box-shadow: 0 4px 0 #6f6858, inset 0 1px 0 #fff; touch-action: none; transition: transform .06s, box-shadow .06s; }
-  .key i { font-size: 18px; font-style: normal; line-height: 1; }
-  .key span { opacity: .7; }
-  .key.down, .key:active:not(:disabled) { transform: translateY(3px); box-shadow: 0 1px 0 #6f6858, inset 0 1px 0 #fff; }
-  .key.port { grid-area: port; }
-  .key.stbd { grid-area: stbd; }
-  .key.thrust { grid-area: thrust; }
-  .key.left { grid-area: left; }
-  .key.right { grid-area: right; }
-  .key.brake { grid-area: brake; }
-  .key.clamp { grid-area: clamp; }
-  .key.thrust, .key.brake, .key.clamp { background: linear-gradient(180deg, #f2c66c, #c4913a); box-shadow: 0 4px 0 #6b4a17, inset 0 1px 0 rgba(255,255,255,.5); }
-  .key.thrust.down, .key.thrust:active:not(:disabled), .key.brake.down, .key.brake:active:not(:disabled), .key.clamp:active:not(:disabled) { box-shadow: 0 1px 0 #6b4a17, inset 0 1px 0 rgba(255,255,255,.5); }
-  .key.thrust i { font-size: 22px; }
-  .key:disabled { filter: grayscale(1) !important; box-shadow: 0 4px 0 #6f6858, inset 0 1px 0 #fff; }
+  /* teletype: one quiet line in the window, just above the console or the dock sheet */
+  .is-cockpit .radio-toast { left: 50%; right: auto; bottom: calc(var(--console-h) + 10px); width: max-content; max-width: calc(100% - 40px); padding: 6px 12px 7px; border: 1px solid var(--hair); border-radius: 3px; background: var(--glass); box-shadow: 0 8px 24px rgba(0,0,0,.35); transform: translateX(-50%); animation-name: radio-in-pill; }
+  .is-cockpit .radio-toast::before { display: none; }
+  .is-cockpit .radio-toast span { display: inline; margin-right: 7px; font: var(--label); letter-spacing: .16em; }
+  .is-cockpit .radio-toast p { display: inline; margin: 0; font-size: 10px; line-height: 1.35; }
+  .is-cockpit .radio-toast p::after { margin-left: 3px; }
+  .is-cockpit.is-docked .radio-toast { bottom: calc(var(--sheet-h) + 12px); }
 
-  /* teletype strip rides the top of the console, or of the dock sheet */
-  .is-cockpit .radio-toast { left: 10px; right: 10px; bottom: calc(var(--console-h) + 8px); width: auto; padding: 6px 10px 7px 12px; transform: none; animation-name: radio-in-flat; }
-  .is-cockpit .radio-toast span { font-size: 6px; }
-  .is-cockpit .radio-toast p { margin-top: 2px; font-size: 10px; line-height: 1.4; }
-  .is-cockpit.is-docked .radio-toast { bottom: calc(var(--sheet-h) + 6px); }
-
-  /* dock: a sheet from the bottom edge, the berth stays in view above it */
-  .is-cockpit .dock-panel { top: auto; right: 0; bottom: 0; left: 0; height: var(--sheet-h); display: flex; flex-direction: column; padding-top: 6px; border-width: 1px 0 0; }
-  .is-cockpit .dock-heading { flex: 0 0 auto; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; min-height: 0; padding: 10px 12px 10px 14px; border-right: 0; border-bottom: 1px solid var(--plate-edge); }
-  .is-cockpit .dock-heading h2 { margin: 3px 0 0; max-width: none; overflow: hidden; font-size: 18px; white-space: nowrap; text-overflow: ellipsis; }
-  .is-cockpit .dock-heading .kind { margin: 3px 0 0; font-size: 7px; }
-  .is-cockpit .dock-heading p { display: none; }
-  .is-cockpit .services { gap: 4px; margin-top: 6px; }
-  .is-cockpit .services .tag { padding: 3px 4px 2px; font-size: 6px; }
-  .is-cockpit .dock-heading .primary-button { min-width: 0; min-height: 38px; padding: 0 12px; font-size: 8px; }
+  /* ---- dock: a sheet from the bottom edge, the berth stays in view above it ---- */
+  .is-cockpit .dock-panel { top: auto; right: 0; bottom: 0; left: 0; height: var(--sheet-h); display: flex; flex-direction: column; padding: 0; border: 0; border-top: 1px solid var(--hair-strong); animation: sheet-in .26s ease-out; }
+  .is-cockpit .dock-panel.plate { background: var(--glass); box-shadow: 0 -12px 40px rgba(0,0,0,.4); }
+  .is-cockpit .dock-panel.plate::before, .is-cockpit .dock-panel.plate::after { display: none; }
+  .is-cockpit .dock-heading { flex: 0 0 auto; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 14px; min-height: 0; padding: 13px 14px 11px 16px; border: 0; background: none; }
+  .is-cockpit .dock-heading > div > span { display: flex; align-items: baseline; gap: 4px; font: var(--label); letter-spacing: .18em; }
+  .is-cockpit .dock-heading > div > span b { color: var(--bone-dim); font: var(--reading); }
+  .is-cockpit .dock-heading > div > span b.arrears { color: var(--danger); }
+  .is-cockpit .dock-heading h2 { margin: 6px 0 0; max-width: none; overflow: hidden; font-size: 20px; letter-spacing: -.02em; white-space: nowrap; text-overflow: ellipsis; }
+  .is-cockpit .dock-heading .kind, .is-cockpit .dock-heading p { display: none; }
+  .is-cockpit .services { gap: 4px; margin-top: 8px; }
+  .is-cockpit .services .tag { padding: 3px 5px 2px; border-color: var(--hair-strong); font-size: 8px; letter-spacing: .1em; }
+  .is-cockpit .dock-heading .primary-button { min-width: 0; min-height: 38px; padding: 0 13px; border-radius: 3px; box-shadow: 0 2px 0 #0b0a07; font-size: 9px; }
+  .is-cockpit .dock-heading .primary-button:active { transform: translateY(1px); box-shadow: 0 1px 0 #0b0a07; }
   .is-cockpit .dock-heading .primary-button span { margin-left: 10px; }
-  .is-cockpit .dock-tabs { flex: 0 0 auto; height: 40px; padding: 0 6px; }
-  .is-cockpit .dock-tabs button { flex: 1; min-width: 0; height: 32px; padding: 0 4px; font-size: 7px; }
-  .is-cockpit .dock-tabs button.active { height: 36px; }
-  .is-cockpit .dock-content { flex: 1 1 auto; min-height: 0; padding-bottom: var(--sab); }
-  .contract-list, .service-grid, .ship-list { grid-template-columns: 1fr; }
-  .contract { min-height: 0; padding: 12px 14px 12px 18px; }
-  .service-grid article { min-height: 0; padding: 14px; }
-  .ship-list article { min-height: 0; }
+  .is-cockpit .dock-tabs { flex: 0 0 auto; gap: 0; height: 38px; padding: 0 8px; background: none; border-bottom: 1px solid var(--hair); }
+  .is-cockpit .dock-tabs button { position: relative; flex: 1; min-width: 0; height: 38px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 8px; letter-spacing: .12em; box-shadow: none; transition: color .15s; }
+  .is-cockpit .dock-tabs button.active { height: 38px; color: var(--bone); background: none; }
+  .is-cockpit .dock-tabs button.active::after { left: 4px; right: 4px; top: auto; bottom: -1px; height: 2px; background: var(--amber); }
+  .is-cockpit .dock-content { flex: 1 1 auto; min-height: 0; padding-bottom: var(--sab); background: none; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .contract-list, .service-grid, .ship-list { grid-template-columns: 1fr; gap: 0; padding: 0; }
+  .is-cockpit .contract, .is-cockpit .service-grid article, .is-cockpit .ship-list article { min-height: 0; padding: 14px 16px 15px 22px; border: 0; border-bottom: 1px solid var(--hair); background: none; }
+  .is-cockpit .contract::before { top: 14px; bottom: 15px; left: 11px; width: 3px; }
+  .is-cockpit .contract::after, .is-cockpit .tear { display: none; }
+  .is-cockpit .contract-top b { padding: 4px 7px 3px; font-size: 12px; }
+  .is-cockpit .contract h3, .is-cockpit .service-grid h3, .is-cockpit .ship-list h3 { font-size: 15px; }
+  .is-cockpit .contract-body .cargo-portrait { width: 80px; height: 42px; margin-top: 6px; }
+  .is-cockpit .manifest { margin-top: 10px; }
+  .is-cockpit .contract button, .is-cockpit .service-grid button, .is-cockpit .ship-list button { margin-top: 12px; min-height: 38px; border-radius: 3px; }
+  .is-cockpit .requirement, .is-cockpit .installed { margin-top: 12px; }
+  .is-cockpit .service-grid p { margin-bottom: 0; }
+  .is-cockpit .ship-portrait { height: 84px; }
+  .is-cockpit .ship-list article.selected { border-left: 3px solid var(--amber); box-shadow: none; }
+  .is-cockpit .ship-list article.selected::after { top: 14px; right: 14px; }
 
-  /* chart and guide fill the screen edge to edge */
-  .modal { inset: 0; }
-  .modal-close { top: calc(10px + var(--sat)); right: 10px; min-height: 32px; }
-  .map-copy { top: calc(12px + var(--sat)); left: 14px; width: calc(100% - 120px); }
+  /* ---- chart and guide fill the screen edge to edge ---- */
+  .modal { inset: 0; border: 0; animation: sheet-in .22s ease-out; }
+  .modal.plate { background: #090c0e; box-shadow: none; }
+  .modal.plate::before, .modal.plate::after { display: none; }
+  .modal-close { top: calc(10px + var(--sat)); right: 10px; min-height: 32px; border-color: var(--hair-strong); background: transparent; box-shadow: none; }
+  .is-cockpit .modal-close kbd { display: none; }
+  .map-copy { top: calc(14px + var(--sat)); left: 16px; width: calc(100% - 120px); }
   .map-copy h2 { margin: 6px 0 0; font-size: 26px; }
   .map-copy > p:last-child { display: none; }
-  .system-chart { padding: calc(78px + var(--sat)) 8px calc(72px + var(--sab)); gap: 8px; }
-  .chart-ports button { padding: 4px 7px 4px 6px; }
-  .map-legend { left: 14px; right: 14px; bottom: calc(10px + var(--sab)); justify-content: flex-start; flex-wrap: wrap; gap: 6px 14px; padding-top: 8px; font-size: 7px; }
-  .guide-modal { padding: calc(56px + var(--sat)) 14px calc(24px + var(--sab)); }
+  .system-chart { padding: calc(80px + var(--sat)) 8px calc(66px + var(--sab)); gap: 8px; }
+  .chart-ports button { padding: 5px 8px 5px 7px; border-color: var(--hair-strong); }
+  .map-legend { left: 16px; right: 16px; bottom: calc(10px + var(--sab)); justify-content: flex-start; flex-wrap: wrap; gap: 6px 14px; padding-top: 8px; border-top-color: var(--hair-strong); }
+  .guide-modal { padding: calc(58px + var(--sat)) 16px calc(24px + var(--sab)); }
   .guide-heading h2 { font-size: 30px; }
-  .guide-grid { grid-template-columns: 1fr; margin: 22px 0; }
-  .guide-grid article { min-height: 0; padding: 16px 16px 16px 18px; }
+  .guide-grid { grid-template-columns: 1fr; gap: 0; margin: 22px 0; }
+  .guide-grid article { min-height: 0; padding: 16px 16px 16px 20px; border: 0; border-bottom: 1px solid var(--hair); background: none; }
+  .guide-grid article::before { top: 16px; bottom: 16px; left: 8px; width: 3px; }
   .guide-modal .primary-button { width: 100%; }
 }
-@keyframes radio-in-flat { from { opacity: 0; transform: translateY(6px); } }
+@keyframes radio-in-pill { from { opacity: 0; transform: translate(-50%, 6px); } }
+@keyframes drawer-in { from { opacity: 0; transform: translateY(-8px); } }
+@keyframes sheet-in { from { opacity: 0; transform: translateY(12px); } }
 
-/* a short screen: the same dash, with its rows pulled in */
+/* a short screen: the same HUD, with its rows pulled in */
 @media (max-height: 540px) {
-  .dash-top { height: 28px; }
-  .dash-brand { margin: 3px 0 3px 8px; padding: 0 12px 0 8px; }
-  .dash-brand b { font-size: 13px; }
-  .dash-brand span { display: none; }
-  .dash-instruments { height: 42px; }
-  .dash-speed strong { font-size: 20px; }
-  .dash-ledger { height: 30px; min-height: 0; }
-  .ledger-cell { gap: 1px; padding-block: 3px 4px; overflow: hidden; }
-  .ledger-cell small { display: none; }
+  .hud-main { height: 40px; }
+  .hud-speed strong { font-size: 22px; }
+  .hud-gauges { height: 18px; }
+  .hud-ledger .ledger-item { height: 28px; }
 }
 
-/* a phone on its side: the console splits into a thumb pod at each edge of
-   the window, and the dock sheet stands beside the berth instead of under it */
+/* a phone on its side: the HUD keeps to one band with the ledger beside the
+   instruments, the keys gather into a pod under each thumb, and the dock
+   sheet stands beside the berth instead of under it */
 @media (pointer: coarse) and (max-height: 540px) and (orientation: landscape) {
-  :root { --dash-h: calc(101px + var(--sat)); --pod-w: calc(150px + env(safe-area-inset-left, 0px)); }
-  .console { top: var(--dash-h); bottom: 0; height: auto; grid-template-columns: 64px 64px 1fr 64px 64px; grid-template-rows: 44px 1fr 1fr; grid-template-areas: "left right . brake clamp" "port stbd . thrust thrust" "port stbd . thrust thrust"; gap: 6px; padding: 8px calc(8px + env(safe-area-inset-right, 0px)) calc(8px + var(--sab)) calc(8px + env(safe-area-inset-left, 0px)); border: 0; background: none; box-shadow: none; pointer-events: none; }
-  .console.plate { background: none; border: 0; box-shadow: none; }
-  .console > * { pointer-events: auto; }
-  .dash-instruments { grid-template-columns: auto auto 280px auto; justify-content: start; }
-  .dash-instruments > :last-child { border-right: 1px solid var(--plate-edge); }
-  .console.plate::before, .console.plate::after { content: ""; position: absolute; top: 0; bottom: 0; width: var(--pod-w); background: linear-gradient(180deg, var(--plate-2), var(--plate)), var(--grain); box-shadow: 0 2px 0 #000; pointer-events: none; }
-  .console.plate::before { left: 0; border-right: 1px solid var(--plate-edge); }
-  .console.plate::after { right: 0; border-left: 1px solid var(--plate-edge); }
-  .key i { font-size: 15px; }
-  .key.thrust i { font-size: 20px; }
-  .is-cockpit .radio-toast { left: var(--pod-w); right: var(--pod-w); bottom: 10px; }
-  .is-cockpit.is-docked .radio-toast { left: 10px; right: calc(52% + 10px); bottom: 10px; }
-  .is-cockpit .dock-panel { top: var(--dash-h); left: 48%; height: auto; border-width: 0 0 0 1px; }
-  .is-cockpit .dock-panel.plate::before { background: var(--castings); }
-  .is-cockpit .dock-heading { padding: 8px 10px 8px 12px; }
-  .is-cockpit .dock-heading h2 { font-size: 15px; }
-  .is-cockpit .dock-heading .primary-button { min-height: 32px; padding: 0 10px; font-size: 7px; }
-  .is-cockpit .dock-tabs { height: 34px; }
-  .is-cockpit .dock-tabs button { height: 28px; font-size: 6px; }
-  .is-cockpit .dock-tabs button.active { height: 31px; }
-  .is-cockpit .dock-content { padding-right: env(safe-area-inset-right, 0px); }
+  :root { --hud-h: calc(59px + var(--sat)); }
+  .hud { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "main ledger" "gauges gauges"; padding-left: var(--sal); padding-right: var(--sar); }
+  .hud-main { grid-area: main; }
+  .hud-gauges { grid-area: gauges; }
+  .hud-ledger { grid-area: ledger; max-width: 50vw; border-top: 0; border-left: 1px solid var(--hair); }
+  .hud-ledger .ledger-item { height: 40px; }
+  .hud > .hud-drawer { left: auto; width: min(420px, 60vw); max-height: calc(100svh - var(--hud-h) - 12px); }
+  .console { top: 0; bottom: 0; height: auto; display: block; padding: 0; background: none; border: 0; pointer-events: none; }
+  .pod { position: absolute; bottom: calc(10px + var(--sab)); display: flex; flex-wrap: wrap; gap: 6px; width: 134px; pointer-events: auto; }
+  .pod-left { left: calc(10px + var(--sal)); }
+  .pod-right { right: calc(10px + var(--sar)); }
+  .pod .key { flex: 1 1 40%; height: 58px; background: var(--glass); }
+  .pod .key.thrust { flex-basis: 100%; height: 92px; background: var(--amber); }
+  .pod .key.down, .pod .key:active { background: rgba(60,62,58,.95); }
+  .pod .key.thrust.down, .pod .key.thrust:active { background: var(--amber-light); }
+  .is-cockpit .radio-toast { bottom: 12px; }
+  .is-cockpit.is-docked .radio-toast { left: 24%; bottom: 12px; }
+  .is-cockpit .dock-panel { top: var(--hud-h); left: 48%; height: auto; border-top: 0; border-left: 1px solid var(--hair-strong); animation: none; }
+  .is-cockpit .dock-heading { padding: 9px 10px 8px 14px; }
+  .is-cockpit .dock-heading h2 { font-size: 16px; }
+  .is-cockpit .dock-heading .primary-button { min-height: 32px; padding: 0 10px; font-size: 8px; }
+  .is-cockpit .dock-tabs, .is-cockpit .dock-tabs button { height: 32px; }
   .modal-close { top: 8px; }
-  .map-copy { top: 8px; }
+  .map-copy { top: 10px; }
   .map-copy h2 { font-size: 20px; }
   .system-chart { padding: 52px 8px 8px; flex-direction: row; }
   .chart-ports { flex: 0 0 auto; flex-direction: column; justify-content: flex-start; max-width: 40%; }
   .map-legend { display: none; }
-  .guide-modal { padding: 44px 14px 16px; }
+  .guide-modal { padding: 44px 16px 16px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

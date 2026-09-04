@@ -892,6 +892,29 @@ function useMobileLayout() {
   return useSyncExternalStore(subscribeMobileLayout, () => window.matchMedia(MOBILE_QUERY).matches, () => false);
 }
 
+/** Engraved key symbols for the cockpit console, all on the same 24-unit grid and the same stroke. */
+const KEY_ICONS = {
+  port: <><path d="M7.5 8.5a7 7 0 1 1-1.7 7.2" /><path d="M7.5 3.5v5h-5" /></>,
+  stbd: <><path d="M16.5 8.5a7 7 0 1 0 1.7 7.2" /><path d="M16.5 3.5v5h5" /></>,
+  thrust: <><path d="M6 11.5l6-6 6 6" /><path d="M6 18.5l6-6 6 6" /></>,
+  left: <><path d="M15 6l-6 6 6 6" /><path d="M5.5 5v14" /></>,
+  right: <><path d="M9 6l6 6-6 6" /><path d="M18.5 5v14" /></>,
+  brake: <><path d="M6 4.5c-2.6 4.2-2.6 10.8 0 15" /><path d="M18 4.5c2.6 4.2 2.6 10.8 0 15" /><path d="M9.5 12h5" /></>,
+  clamp: <><path d="M9 4H4.5v16H9" /><path d="M15 4h4.5v16H15" /><path d="M8.5 12h7" /></>,
+} as const;
+const TOOL_ICONS = {
+  chart: <><path d="M12 3.5l8.5 8.5-8.5 8.5L3.5 12z" /><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" /></>,
+  guide: <><circle cx="12" cy="12" r="8.5" /><path d="M9.6 9.6a2.4 2.4 0 1 1 3.4 2.2c-.7.4-1 .9-1 1.6" /><circle cx="12" cy="16.6" r=".9" fill="currentColor" stroke="none" /></>,
+  sound: <><path d="M4.5 9.5v5h3L12 18.5v-13L7.5 9.5z" /><path d="M15.5 9.2a4 4 0 0 1 0 5.6" /></>,
+  muted: <><path d="M4.5 9.5v5h3L12 18.5v-13L7.5 9.5z" /><path d="M16 10l4 4M20 10l-4 4" /></>,
+} as const;
+function ToolIcon({ kind }: { kind: keyof typeof TOOL_ICONS }) {
+  return <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">{TOOL_ICONS[kind]}</svg>;
+}
+function KeyIcon({ kind }: { kind: keyof typeof KEY_ICONS }) {
+  return <svg className="key-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{KEY_ICONS[kind]}</svg>;
+}
+
 function ShipPortrait({ ship }: { ship: ShipDefinition }) {
   const ref = usePortrait((ctx, width, height) => drawShipPortrait(ctx, ship, width, height), [ship]);
   return <canvas ref={ref} className="ship-portrait portrait" aria-hidden="true" />;
@@ -1996,15 +2019,15 @@ export default function EmberlineGame() {
         const box = node.getBoundingClientRect();
         if (box.width <= rect.width * 0.6) {
           view.right = Math.min(view.right, box.left - rect.left);
-        } else if (box.height <= rect.height * 0.5) {
-          view.bottom = Math.min(view.bottom, box.top - rect.top);
-        } else {
-          /* a full-size console is the pod layout: its keys sit at either edge and the window is what lies between them */
-          for (const key of Array.from(node.children)) {
-            const keyBox = key.getBoundingClientRect();
-            if (keyBox.left + keyBox.width / 2 < rect.left + rect.width / 2) view.left = Math.max(view.left, keyBox.right - rect.left);
-            else view.right = Math.min(view.right, keyBox.left - rect.left);
+        } else if (node === consoleRef.current && box.height > rect.height * 0.5) {
+          /* a full-height console is the pod layout: a pod sits at either edge and the window is what lies between */
+          for (const pod of Array.from(node.children)) {
+            const podBox = pod.getBoundingClientRect();
+            if (podBox.left + podBox.width / 2 < rect.left + rect.width / 2) view.left = Math.max(view.left, podBox.right - rect.left);
+            else view.right = Math.min(view.right, podBox.left - rect.left);
           }
+        } else {
+          view.bottom = Math.min(view.bottom, box.top - rect.top);
         }
       }
       view.bottom = Math.max(view.bottom, view.top + 120);
@@ -2461,7 +2484,7 @@ export default function EmberlineGame() {
     <section className="dock-panel plate" ref={dockPanelRef}>
       <div className="dock-heading">
         <div>
-          <span>BERTHED AT {docked.callSign}</span>
+          <span>BERTHED AT {docked.callSign}{mobile && <> · <b className={ui.credits < 0 ? "arrears" : ""}>{money(ui.credits)}</b></>}</span>
           <h2>{docked.name}</h2>
           <small className="kind">{docked.kind}</small>
           <p>{docked.description}</p>
@@ -2547,82 +2570,76 @@ export default function EmberlineGame() {
       )}
 
       {/*
-        * The cockpit. On a phone the flight deck is one instrument: a dash
-        * pinned along the top (registry, account, the utilities, speed, range,
-        * the two gauges, and a ledger strip that unfolds the manifest or the
-        * gate checklist), the window in the middle, and the control console
-        * along the bottom. Nothing floats over the window.
+        * The cockpit. On a phone the flight deck is a thin translucent HUD
+        * along the top (speed, range and closing, the two gauges, three tool
+        * icons, and a ledger line that appears only when there is something
+        * to say and unfolds into a drawer), one row of quiet keys along the
+        * bottom, and the window between them, which takes most of the screen.
+        * Held on its side, the keys gather into a pod under each thumb.
         */}
       {screen === "game" && mobile && (
         <>
-          <div className="cockpit-rails" aria-hidden="true" />
-          <header className="dash plate" ref={dashRef}>
-            <div className="dash-top">
-              <div className="dash-brand"><b>EMBERLINE</b><span>{currentShip.name.toUpperCase()} {currentShip.model}</span></div>
-              <div className="dash-account"><span>{ui.credits < 0 ? "IN ARREARS" : "ACCOUNT"}</span><strong className={ui.credits < 0 ? "arrears" : ""}>{money(ui.credits)}</strong></div>
-              <nav className="dash-nav" aria-label="Game utilities">
-                <button onClick={() => setMapOpen(true)} aria-label="Open system chart">MAP</button>
-                <button onClick={() => setHelpOpen(true)} aria-label="Open guide">HELP</button>
-                <button className={muted ? "off" : ""} aria-label={muted ? "Enable audio" : "Mute audio"} aria-pressed={muted} onClick={toggleMute}>{muted ? "MUTE" : "SND"}</button>
+          <header className="hud" ref={dashRef}>
+            <div className="hud-main">
+              <div className="hud-speed"><strong>{Math.round(ui.speed)}</strong><small>m/s</small></div>
+              <div className="hud-nav">
+                <span><i>{target.callSign}</i><b>{Math.round(ui.distance)} km</b></span>
+                <span><i>CLOSING</i><b className={ui.closing > 36 ? "hot" : ""}>{Math.round(ui.closing)} m/s</b></span>
+              </div>
+              <nav className="hud-tools" aria-label="Game utilities">
+                <button onClick={() => setMapOpen(true)} aria-label="Open system chart"><ToolIcon kind="chart" /></button>
+                <button onClick={() => setHelpOpen(true)} aria-label="Open guide"><ToolIcon kind="guide" /></button>
+                <button className={muted ? "off" : ""} aria-label={muted ? "Enable audio" : "Mute audio"} aria-pressed={muted} onClick={toggleMute}><ToolIcon kind={muted ? "muted" : "sound"} /></button>
               </nav>
             </div>
-            <div className="dash-instruments">
-              <div className="dash-speed"><span>SPEED</span><strong>{Math.round(ui.speed)}</strong><small>m/s</small></div>
-              <div className="dash-range">
-                <div><span>RANGE {target.callSign}</span><b>{Math.round(ui.distance)} km</b></div>
-                <div><span>CLOSING</span><b className={ui.closing > 36 ? "hot" : ""}>{Math.round(ui.closing)} m/s</b></div>
-              </div>
-              <div className="dash-gauges">
-                {propellantGauge("PROP")}
-                {hullGauge}
-              </div>
-              <button className={`dash-assist ${ui.assist ? "active" : ""}`} aria-pressed={ui.assist} onClick={toggleAssist}><span className="status-light" />ASSIST</button>
+            <div className="hud-gauges">
+              <span>PROP</span><div className="gauge"><i style={{ width: `${clamp(ui.fuel / fuelCapacity * 100, 0, 100)}%` }} /></div><b>{Math.round(ui.fuel)}</b>
+              <span>HULL</span><div className="gauge hull"><i style={{ width: `${ui.hull}%` }} /></div><b>{Math.round(ui.hull)}%</b>
+              <button className={`hud-assist ${ui.assist ? "active" : ""}`} aria-pressed={ui.assist} onClick={toggleAssist}>ASSIST</button>
             </div>
-            <div className="dash-ledger">
-              <button
-                type="button"
-                className={`ledger-cell ${openDrawer === "mission" ? "open" : ""}`}
-                onClick={() => setDrawer((value) => value === "mission" ? null : "mission")}
-                aria-expanded={openDrawer === "mission"}
-              >
-                <span>{active ? "MANIFEST" : "OPEN SHIFT"}</span>
-                <b>{active ? active.title : "Choose your next line"}</b>
-                <small>{nextAction}</small>
-              </button>
-              {!docked && ui.line && (
-                <button
-                  type="button"
-                  className={`ledger-cell gate ${openDrawer === "gate" ? "open" : ""} ${ui.line.holding ? "holding" : ""}`}
-                  onClick={() => setDrawer((value) => value === "gate" ? null : "gate")}
-                  aria-expanded={openDrawer === "gate"}
-                >
-                  <span>{ui.line.to}</span>
-                  <b>{Math.round(ui.line.range)} km</b>
-                  <small>{ui.line.holding ? "Holding the line" : "Gate checklist"}</small>
-                </button>
-              )}
-              {!docked && ui.fuel < 9 && (
-                <button type="button" className="ledger-cell tow" onClick={emergencyTow}>
-                  <span>PROPELLANT LOW</span>
-                  <b>Request rescue tow</b>
-                  <small>{money(TOW_FEE)} billed to the account</small>
-                </button>
-              )}
-            </div>
+            {(active || (!docked && ui.line) || (!docked && ui.fuel < 9)) && (
+              <div className="hud-ledger">
+                {active && (
+                  <button
+                    type="button"
+                    className={`ledger-item ${openDrawer === "mission" ? "open" : ""}`}
+                    onClick={() => setDrawer((value) => value === "mission" ? null : "mission")}
+                    aria-expanded={openDrawer === "mission"}
+                  >
+                    <b>{active.title}</b><em>{nextAction}</em>
+                  </button>
+                )}
+                {!docked && ui.line && (
+                  <button
+                    type="button"
+                    className={`ledger-item gate ${openDrawer === "gate" ? "open" : ""} ${ui.line.holding ? "holding" : ""}`}
+                    onClick={() => setDrawer((value) => value === "gate" ? null : "gate")}
+                    aria-expanded={openDrawer === "gate"}
+                  >
+                    <b>{Math.round(ui.line.range)} km</b><em>{ui.line.holding ? "holding" : "gate"}</em>
+                  </button>
+                )}
+                {!docked && ui.fuel < 9 && (
+                  <button type="button" className="ledger-item tow" onClick={emergencyTow}>
+                    <b>Rescue tow</b><em>{money(TOW_FEE)}</em>
+                  </button>
+                )}
+              </div>
+            )}
             {openDrawer && (
-              <div className={`dash-drawer ${openDrawer}`}>
+              <div className={`hud-drawer ${openDrawer}`}>
                 <div className="panel-kicker">
-                  <span>{openDrawer === "mission" ? (active ? "ACTIVE MANIFEST" : "OPEN SHIFT") : ui.line?.name}</span>
+                  <span>{openDrawer === "mission" ? "ACTIVE MANIFEST" : ui.line?.name}</span>
                   <span className="panel-kicker-tools">
                     <span className={`stamp ${openDrawer === "mission" && active?.kind === "cryogenic" ? "cold" : ""}`}>{openDrawer === "mission" ? active?.kind ?? "self-directed" : ui.line?.to}</span>
-                    <button type="button" className="drawer-close" onClick={() => setDrawer(null)} aria-label="Fold the drawer away">▴</button>
+                    <button type="button" className="drawer-close" onClick={() => setDrawer(null)}>Fold</button>
                   </span>
                 </div>
                 <div className={openDrawer === "mission" ? "mission-detail" : "line-detail"}>
                   {openDrawer === "mission" ? missionDetail : gateDetail}
                 </div>
                 {openDrawer === "mission" && (
-                  <div className="drawer-foot"><span>STANDING <b>{String(ui.reputation).padStart(2, "0")}</b></span><span>JOBS <b>{String(ui.completed).padStart(2, "0")}</b></span></div>
+                  <div className="drawer-foot"><span>ACCOUNT <b className={ui.credits < 0 ? "arrears" : ""}>{money(ui.credits)}</b></span><span>STANDING <b>{String(ui.reputation).padStart(2, "0")}</b></span><span>JOBS <b>{String(ui.completed).padStart(2, "0")}</b></span></div>
                 )}
               </div>
             )}
@@ -2631,14 +2648,18 @@ export default function EmberlineGame() {
           {dockPanel}
 
           {!docked && (
-            <div className="console plate" ref={consoleRef} aria-label="Touch flight controls" onContextMenu={(event) => event.preventDefault()}>
-              <button className="key rotate port" aria-label="Rotate to port" {...holdKey("a")}><i>↺</i><span>PORT</span></button>
-              <button className="key rotate stbd" aria-label="Rotate to starboard" {...holdKey("d")}><i>↻</i><span>STBD</span></button>
-              <button className="key thrust" aria-label="Main drive" {...holdKey("w")}><i>▲</i><span>MAIN DRIVE</span></button>
-              <button className="key strafe left" aria-label="Strafe left" disabled={!retroFitted} title={retroFitted ? undefined : "Requires Retro thruster pair"} {...holdKey("q")}><i>◀</i><span>STRAFE</span></button>
-              <button className="key strafe right" aria-label="Strafe right" disabled={!retroFitted} title={retroFitted ? undefined : "Requires Retro thruster pair"} {...holdKey("e")}><i>▶</i><span>STRAFE</span></button>
-              <button className="key brake" aria-label="Assisted brake" disabled={!retroFitted} title={retroFitted ? undefined : "Requires Retro thruster pair"} {...holdKey("shift")}><i>■</i><span>BRAKE</span></button>
-              <button className="key clamp" aria-label="Clamp or dock" onClick={() => { actionRequestRef.current = true; }}><i>⌗</i><span>CLAMP</span></button>
+            <div className={`console ${retroFitted ? "fitted" : ""}`} ref={consoleRef} aria-label="Touch flight controls" onContextMenu={(event) => event.preventDefault()}>
+              <div className="pod pod-left">
+                <button className="key port" aria-label="Rotate to port" {...holdKey("a")}><KeyIcon kind="port" /><span>PORT</span></button>
+                <button className="key stbd" aria-label="Rotate to starboard" {...holdKey("d")}><KeyIcon kind="stbd" /><span>STBD</span></button>
+                {retroFitted && <button className="key left" aria-label="Strafe left" {...holdKey("q")}><KeyIcon kind="left" /><span>STRAFE</span></button>}
+                {retroFitted && <button className="key right" aria-label="Strafe right" {...holdKey("e")}><KeyIcon kind="right" /><span>STRAFE</span></button>}
+              </div>
+              <div className="pod pod-right">
+                <button className="key thrust" aria-label="Main drive" {...holdKey("w")}><KeyIcon kind="thrust" /><span>THRUST</span></button>
+                {retroFitted && <button className="key brake" aria-label="Assisted brake" {...holdKey("shift")}><KeyIcon kind="brake" /><span>BRAKE</span></button>}
+                <button className="key clamp" aria-label="Clamp or dock" onClick={() => { actionRequestRef.current = true; }}><KeyIcon kind="clamp" /><span>CLAMP</span></button>
+              </div>
             </div>
           )}
 

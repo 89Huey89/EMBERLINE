@@ -144,15 +144,18 @@ in `app/globals.css`:
 - **Same drawings.** Anything the menus show that also flies is drawn by the
   same code: ships on the shipyard cards, cargo on the manifests, planets on the
   chart (`usePortrait` in `EmberlineGame.tsx`).
-- **The cockpit.** On a phone the flight deck is one instrument, not a set of
-  plates pinned around a window. A dash runs along the top edge (registry,
-  account, utilities; speed, range, the two gauges, the assist lamp; and a
-  ledger strip whose cells unfold the manifest or the gate checklist as a
-  drawer), a console of keycaps runs along the bottom, and the window is
-  what lies between. Nothing floats over the window. Held on its side, the
-  console splits into a thumb pod at each edge and the dock sheet stands
-  beside the berth instead of under it. The ship is always drawn at the
-  centre of whatever window the furniture leaves clear.
+- **The cockpit.** On a phone the flight deck is quiet, and the window takes
+  most of the screen. A thin band of dark glass runs along the top: speed,
+  range and closing, propellant and hull as hairlines, three tool icons, and
+  a ledger line that appears only when there is something to say (a manifest
+  aboard, a gate in range, a dry tank) and unfolds into a drawer. One row of
+  keys runs along the bottom. Neither wears castings, hazard bands or tape;
+  they are dark glass with a single hairline. Amber is kept for the drive key
+  and the primary action, teal for the instruments, everything else is bone
+  on ink. Keys for hardware that is not aboard are not shown. Held on its
+  side, the keys gather into a pod under each thumb and the dock sheet stands
+  beside the berth. The ship is always drawn at the centre of whatever window
+  the furniture leaves clear.
 
 | Use | Colour |
 | --- | --- |
