@@ -975,6 +975,8 @@ export default function EmberlineGame() {
   const [panel, setPanel] = useState<"contracts" | "service" | "fleet">("contracts");
   /** Collapses the mission card to a one-line strip. Only has a visual effect on narrow (mobile) layouts. */
   const [missionCollapsed, setMissionCollapsed] = useState(true);
+  /** Collapses the gate-line card to a one-line strip. Only has a visual effect on narrow (mobile) layouts. */
+  const [lineCollapsed, setLineCollapsed] = useState(true);
   const [mapOpen, setMapOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -2516,15 +2518,35 @@ export default function EmberlineGame() {
           )}
 
           {!docked && ui.line && (
-            <aside className="line-card plate">
-              <div className="panel-kicker"><span>{ui.line.name}</span><span className="stamp">{ui.line.to}</span></div>
-              <div className="telemetry-row"><span>RANGE TO GATE</span><b>{Math.round(ui.line.range)} km</b></div>
-              <div className={`line-check ${ui.line.speedAlong >= ui.line.threshold ? "met" : ""}`}><span>LANE SPEED</span><b>{Math.round(ui.line.speedAlong)} / {ui.line.threshold}</b></div>
-              <div className={`line-check ${ui.line.inLane ? "met" : ""}`}><span>OFF CENTRE</span><b>{Math.round(ui.line.lateral)} / {ui.line.laneWidth}</b></div>
-              <div className={`line-check ${ui.line.drift <= ui.line.tolerance ? "met" : ""}`}><span>TRACK</span><b>{(ui.line.drift * 180 / Math.PI).toFixed(1)}° / {(ui.line.tolerance * 180 / Math.PI).toFixed(0)}°</b></div>
-              <div className={`line-check ${ui.line.clear ? "met" : ""}`}><span>CLEAR OF WELLS</span><b>{ui.line.clear ? "YES" : "NO"}</b></div>
-              <div className="bar-row"><span>DRIVE SPOOL</span><div className="meter line"><i style={{ width: `${clamp(ui.line.spool / ui.line.spoolNeeded * 100, 0, 100)}%` }} /></div><b>{ui.line.spool.toFixed(1)}s</b></div>
-              {ui.line.stranding && <small className="requirement">A manifest is aboard. Its deadline keeps running while you are on the line.</small>}
+            <aside className={`line-card plate ${lineCollapsed ? "collapsed" : ""}`}>
+              <div className="panel-kicker">
+                <span>{ui.line.name}</span>
+                <span className="panel-kicker-tools">
+                  <span className="stamp">{ui.line.to}</span>
+                  <button
+                    type="button"
+                    className="line-toggle"
+                    onClick={() => setLineCollapsed((value) => !value)}
+                    aria-expanded={!lineCollapsed}
+                    aria-label={lineCollapsed ? "Expand gate telemetry" : "Collapse gate telemetry"}
+                  >
+                    {lineCollapsed ? "▾" : "▴"}
+                  </button>
+                </span>
+              </div>
+              <button type="button" className="line-summary" onClick={() => setLineCollapsed(false)}>
+                <b>{Math.round(ui.line.range)} km to gate</b>
+                <span>{ui.line.holding ? "Holding the line" : "Tap for gate checklist"}</span>
+              </button>
+              <div className="line-detail">
+                <div className="telemetry-row"><span>RANGE TO GATE</span><b>{Math.round(ui.line.range)} km</b></div>
+                <div className={`line-check ${ui.line.speedAlong >= ui.line.threshold ? "met" : ""}`}><span>LANE SPEED</span><b>{Math.round(ui.line.speedAlong)} / {ui.line.threshold}</b></div>
+                <div className={`line-check ${ui.line.inLane ? "met" : ""}`}><span>OFF CENTRE</span><b>{Math.round(ui.line.lateral)} / {ui.line.laneWidth}</b></div>
+                <div className={`line-check ${ui.line.drift <= ui.line.tolerance ? "met" : ""}`}><span>TRACK</span><b>{(ui.line.drift * 180 / Math.PI).toFixed(1)}° / {(ui.line.tolerance * 180 / Math.PI).toFixed(0)}°</b></div>
+                <div className={`line-check ${ui.line.clear ? "met" : ""}`}><span>CLEAR OF WELLS</span><b>{ui.line.clear ? "YES" : "NO"}</b></div>
+                <div className="bar-row"><span>DRIVE SPOOL</span><div className="meter line"><i style={{ width: `${clamp(ui.line.spool / ui.line.spoolNeeded * 100, 0, 100)}%` }} /></div><b>{ui.line.spool.toFixed(1)}s</b></div>
+                {ui.line.stranding && <small className="requirement">A manifest is aboard. Its deadline keeps running while you are on the line.</small>}
+              </div>
             </aside>
           )}
 
